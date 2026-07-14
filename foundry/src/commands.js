@@ -175,16 +175,33 @@ function status() {
 }
 
 // ─────────────────────────────── push (graduate → Invoke) ───────────────────────────────
-function push() {
+async function push(args) {
   const cfg = store.readGlobalConfig();
   if (!cfg.invoke_token) throw new Error("Not linked. Run `foundry login` to connect to Invoke first.");
   const dir = requireProject();
   const project = store.readProject(dir);
   const effects = new Ledger(store.ledgerDir(dir)).list();
-  console.log(`Graduating ${b(project.name)} → Invoke (${effects.length} local effect(s))…`);
-  console.log(yellow("  prototype:") + " cloud push is stubbed. This is where the local governed workspace");
-  console.log("  becomes a durable, shareable, team-owned Invoke workspace (Postgres-backed).");
-  console.log(dim("  next: mirror the local ledger to POST /v1/workspaces + gateway, pin the id here."));
+  const base = args.baseUrl || cfg.invoke_base || process.env.INVOKE_API_URL || "https://api.invokehq.run";
+
+  // Graduate: provision a real durable, isolated, org-owned workspace in the cloud.
+  let wsId = project.invoke && project.invoke.workspace;
+  if (!wsId) {
+    const res = await fetch(base + "/v1/workspaces", {
+      method: "POST",
+      headers: { "X-API-Key": cfg.invoke_token, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: project.name, budget_micros: 5000000 }),
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`Invoke ${res.status}: ${text.slice(0, 200)}`);
+    wsId = JSON.parse(text).workspace.id;
+    project.invoke = Object.assign({}, project.invoke, { workspace: wsId, base });
+    store.writeProject(dir, project);
+  }
+  if (args.json) { console.log(JSON.stringify({ graduated: true, workspace: wsId, base, local_effects: effects.length }, null, 2)); return 0; }
+  console.log(green(`✔ Graduated "${project.name}" → Invoke`) + `  workspace ${b(wsId)}`);
+  console.log(`  ${dim("durable, isolated, org-owned (Postgres-backed) — survives restarts, shareable with your team.")}`);
+  console.log(`  ${effects.length} local effect(s) stay in your on-disk ledger; new cloud runs are governed there.`);
+  console.log(dim(`  next: connect tools as governed connectors + route runs through the cloud gateway.`));
   return 0;
 }
 
