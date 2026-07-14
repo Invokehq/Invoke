@@ -1,0 +1,33 @@
+{
+  "name": "@invokehq/foundry",
+  "version": "0.1.0",
+  "description": "Forge AI agents locally with a governed workspace — exactly-once, receipted, no account needed. Deploy to Invoke when you're ready.",
+  "bin": {
+    "foundry": "bin/foundry.js"
+  },
+  "type": "commonjs",
+  "files": [
+    "bin",
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "mcp",
+    "governance",
+    "idempotency",
+    "invoke",
+    "foundry"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  }
+}

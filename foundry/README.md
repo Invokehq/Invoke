@@ -1,0 +1,51 @@
+# @invokehq/foundry
+
+**Forge AI agents locally with a governed workspace — exactly-once, receipted, no account needed.**
+Deploy to [Invoke](https://invokehq.run) when you're ready.
+
+> **Invoke** = the platform you deploy to. **Foundry** = the thing you build with.
+
+```bash
+npm install -g @invokehq/foundry
+
+foundry init            # forge a local governed workspace (no account)
+foundry run             # run an agent, governed — exactly-once + a signed receipt
+foundry receipts        # see what happened; --verify proves the ledger
+foundry login           # link to Invoke when you want durable, shareable, team workspaces
+```
+
+## Why
+
+Every governed call in Foundry goes through a **local effect ledger** — the same model
+as Invoke's cloud, on your disk:
+
+- **Exactly-once.** Re-run an identical call (same agent + tool + params + idempotency key)
+  and it's **reconciled to the existing receipt**, not executed twice. Blind retries are safe.
+- **Receipted.** Every commit mints a hash-chained, HMAC-signed receipt. `foundry receipts
+  --verify` recomputes the chain and signatures — tamper-evident.
+- **Local-first.** No login, no server, no signup to get to value. When you want durability,
+  teammates, and org isolation, `foundry login` + `foundry push` graduate the workspace to Invoke.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `foundry init [name]` | Create `foundry.json` + a local governed ledger under `.foundry/` |
+| `foundry run [tool] [json]` | Run a tool/agent through the ledger. `--key K` (idempotency), `--agent A`, `--json` |
+| `foundry receipts [--verify]` | List receipts, or verify the signed hash-chain |
+| `foundry status` | Project, local workspace, and Invoke link state |
+| `foundry login [--token K]` | Link this machine to Invoke (opens the web app) |
+| `foundry push` | Graduate the local workspace to a durable cloud one *(prototype: stubbed)* |
+
+Built-in tools: `echo`, `time`, `http.get '{"url":"…"}'`. In Invoke these become governed connectors.
+
+## Example
+
+```bash
+foundry init hello
+foundry run echo '{"msg":"hi"}' --key demo
+foundry run echo '{"msg":"hi"}' --key demo     # ⧗ duplicate blocked — reconciled to the receipt
+foundry receipts --verify                       # Ledger valid — 1 receipt(s), head …
+```
+
+Requires Node ≥ 18. Zero dependencies. Prototype — `v0.1.0`.

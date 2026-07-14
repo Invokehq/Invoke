@@ -1,0 +1,84 @@
+#!/usr/bin/env node
+"use strict";
+const commands = require("../src/commands");
+const pkg = require("../package.json");
+
+const BOOL_FLAGS = new Set(["json", "force", "verify", "help", "version"]);
+const ALIAS = { h: "help", V: "version" };
+
+// Minimal zero-dependency arg parser: --flag, --key value, -h; rest are positionals.
+function parse(argv) {
+  const args = { _: [] };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a.startsWith("--")) {
+      const [k, inlineV] = a.slice(2).split(/=(.*)/s);
+      if (BOOL_FLAGS.has(k)) { args[k] = true; }
+      else if (inlineV !== undefined) { args[k] = inlineV; }
+      else if (i + 1 < argv.length && !argv[i + 1].startsWith("-")) { args[k] = argv[++i]; }
+      else { args[k] = true; }
+      if (k === "idempotency-key") args.key = args[k];
+      if (k === "base-url") args.baseUrl = args[k];
+      if (k === "agent-id") args.agent = args[k];
+    } else if (a.startsWith("-") && a.length === 2 && ALIAS[a[1]]) {
+      args[ALIAS[a[1]]] = true;
+    } else {
+      args._.push(a);
+    }
+  }
+  return args;
+}
+
+function bold(s) { return `\x1b[1m${s}\x1b[0m`; }
+function dim(s) { return `\x1b[2m${s}\x1b[0m`; }
+
+const HELP = `${bold("foundry")} — forge AI agents locally, then deploy to Invoke.
+
+  ${dim("Invoke = the platform you deploy to.  Foundry = the thing you build with.")}
+
+${bold("USAGE")}
+  foundry <command> [options]
+
+${bold("BUILD (local, no account)")}
+  init [name]              Forge a local governed workspace (on-disk ledger)
+  run [tool] [json]        Run an agent/tool through the ledger — exactly-once, receipted
+                            --key K    idempotency key (rerun -> duplicate blocked)
+                            --agent A  attribute to an agent    --json
+  receipts [--verify]      List local receipts, or verify the signed hash-chain
+  status                   Show project, local workspace, and Invoke link
+
+${bold("DEPLOY (to Invoke)")}
+  login [--token K]        Link this machine to Invoke (opens the web app)
+  push                     Graduate the local workspace to a durable cloud one
+
+  Built-in tools: echo | time | http.get '{"url":"..."}'
+
+This is a prototype (v${pkg.version}).`;
+
+async function main() {
+  const args = parse(process.argv.slice(2));
+  const cmd = args._.shift();
+
+  if (args.version) { console.log(`foundry ${pkg.version}`); return 0; }
+  if (!cmd) { console.log(HELP); return 0; }
+
+  const table = {
+    login: commands.login, init: commands.init, run: commands.run,
+    receipts: commands.receipts, status: commands.status, push: commands.push,
+  };
+  const fn = table[cmd];
+  if (!fn) {
+    console.error(`foundry: unknown command '${cmd}'.\n`);
+    console.log(HELP);
+    return 2;
+  }
+  if (args.help) { console.log(HELP); return 0; }
+  return await fn(args);
+}
+
+main()
+  .then((code) => process.exit(code || 0))
+  .catch((err) => {
+    console.error(`foundry: error: ${err && err.message ? err.message : err}`);
+    process.exit(1);
+  });
