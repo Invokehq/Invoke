@@ -73,12 +73,18 @@ async function handshake(url) {
   return init.sessionId;
 }
 
-// Connect: handshake + list the server's tools.
+// Connect: handshake + list the server's tools (full defs, incl. inputSchema).
 async function connect(url) {
   const sessionId = await handshake(url);
   const list = await rpc(url, sessionId, { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
   const tools = (list.json && list.json.result && list.json.result.tools) || [];
-  return { tools: tools.map((t) => ({ name: t.name, description: (t.description || "").replace(/\s+/g, " ").slice(0, 80) })) };
+  return {
+    tools: tools.map((t) => ({
+      name: t.name,
+      description: t.description || "",
+      inputSchema: t.inputSchema || { type: "object" },
+    })),
+  };
 }
 
 // Call one tool. Fresh session per call (stateless, like the gateway's per-request model).

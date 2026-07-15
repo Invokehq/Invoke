@@ -55,6 +55,11 @@ ${bold("BUILD")}
     workspace tools          List available tools
   status                   Show project, target, and Invoke link
 
+${bold("SERVE (run your coding agent on Foundry)")}
+  serve                    Governed MCP gateway over stdio — point Claude Code/Cursor at it;
+                            every tool call becomes a receipted Execution
+                            ${dim("claude mcp add foundry -- foundry serve")}
+
 ${bold("DEPLOY (to Invoke)")}
   login [--token K]        Link this machine to Invoke (opens the web app)
   push                     Graduate the local workspace to a durable cloud one
@@ -73,7 +78,7 @@ async function main() {
   const table = {
     login: commands.login, init: commands.init, run: commands.run,
     receipts: commands.receipts, status: commands.status, push: commands.push,
-    workspace: commands.workspace,
+    workspace: commands.workspace, serve: commands.serve,
   };
   const fn = table[cmd];
   if (!fn) {

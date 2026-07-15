@@ -313,13 +313,13 @@ async function workspaceConnect(args) {
     console.log(dim(`  run one:  foundry run ${name}.<tool> '<json>'   ·   list:  foundry workspace tools`));
     return 0;
   }
-  // local: handshake the MCP server, import its tool list into the local sandbox.
+  // local: handshake the MCP server, import its tool defs into the local sandbox.
   const { tools } = await mcp.connect(url);
   const conns = store.readConnectors(dir);
-  conns[name] = { url, tools: tools.map((t) => t.name), connected_at: new Date().toISOString() };
+  conns[name] = { url, tools, connected_at: new Date().toISOString() };
   store.writeConnectors(dir, conns);
   console.log(green(`✔ Connected ${b(name)}`) + ` — ${tools.length} tool(s), governed by your local ledger.`);
-  for (const t of tools.slice(0, 6)) console.log(`  ${name}.${t.name}  ${dim(t.description)}`);
+  for (const t of tools.slice(0, 6)) console.log(`  ${name}.${t.name}  ${dim((t.description || "").replace(/\s+/g, " ").slice(0, 66))}`);
   if (tools.length > 6) console.log(dim(`  …and ${tools.length - 6} more`));
   console.log(dim(`  run one:  foundry run ${name}.${tools[0] ? tools[0].name : "<tool>"} '<json>'`));
   return 0;
@@ -346,7 +346,7 @@ async function workspaceTools(args) {
   if (!names.length) { console.log(dim("Connectors: none — `foundry workspace connect <name> <mcp_url>`")); return 0; }
   for (const n of names) {
     console.log(`${b(n)} ${dim(conns[n].url)}`);
-    for (const t of conns[n].tools) console.log(`  ${n}.${t}`);
+    for (const t of conns[n].tools) console.log(`  ${n}.${typeof t === "string" ? t : t.name}`);
   }
   return 0;
 }
@@ -460,7 +460,22 @@ async function push(args) {
   return 0;
 }
 
-module.exports = { login, init, run, receipts, status, push, workspace };
+// ─────────────────────────────── serve (the MCP gateway) ───────────────────────────────
+async function serve(args) {
+  const dir = requireProject();
+  const conns = Object.keys(store.readConnectors(dir));
+  // Guidance goes to stderr — stdout is the MCP JSON-RPC channel.
+  process.stderr.write(green("foundry serve") + dim(" — governed MCP gateway for your coding agent\n"));
+  if (!conns.length) {
+    process.stderr.write(dim("  no tools connected yet — `foundry workspace connect <name> <mcp_url>` first.\n"));
+  }
+  process.stderr.write(dim("  point Claude Code / Cursor at this command, e.g.:  claude mcp add foundry -- foundry serve\n"));
+  const { serve: runServer } = require("./serve");
+  await runServer(dir, args);
+  return 0;
+}
+
+module.exports = { login, init, run, receipts, status, push, workspace, serve };
 
 function parseJson(s) {
   try { const v = JSON.parse(s); if (v && typeof v === "object") return v; throw 0; }

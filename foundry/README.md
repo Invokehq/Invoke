@@ -38,6 +38,7 @@ as Invoke's cloud, on your disk:
 | `foundry workspace connect <name> <mcp_url>` | Connect a real MCP tool server (governed) |
 | `foundry workspace setup [--connect n=url] [--budget usd]` | Guided: connect a tool + set a budget |
 | `foundry workspace tools` | List available tools |
+| `foundry serve` | Governed MCP gateway (stdio) — point your coding agent at it |
 | `foundry status` | Project, active target, and Invoke link state |
 | `foundry login [--token K]` | Link this machine to Invoke (opens the web app) |
 | `foundry push` | Graduate the local workspace to a durable cloud one |
@@ -45,6 +46,22 @@ as Invoke's cloud, on your disk:
 Built-in tools: `echo`, `time`, `http.get`. **Connect real tools** with `foundry workspace connect`
 (e.g. `foundry workspace connect deepwiki https://mcp.deepwiki.com/mcp`) — any MCP server, governed by
 the ledger locally *and* in the cloud. `run`/`receipts` follow the active workspace; no `--cloud` flag.
+
+## Run your coding agent on Foundry
+
+`foundry serve` is a governed MCP gateway over stdio. Point Claude Code / Cursor / Codex at it and
+**every tool call your agent makes becomes a governed Execution** — identity, exactly-once (blind
+retries reconcile to the receipt), and a signed, replayable ledger — without the agent knowing:
+
+```bash
+claude mcp add foundry -- foundry serve      # Claude Code
+# then, after your agent works:
+foundry receipts            # everything it did, receipted
+foundry receipts --verify   # prove the ledger
+```
+
+**Everything is an Execution** — tool calls today; model calls, HTTP, memory, and approvals plug in
+as more execution types (same identity / policy / retry / trace / cost / replay for each).
 
 ## Example
 
