@@ -49,8 +49,19 @@ function writeProject(dir, project) {
 function ledgerDir(dir) {
   return path.join(dir, ".foundry");
 }
+function connectorsPath(dir) {
+  return path.join(ledgerDir(dir), "connectors.json");
+}
+function readConnectors(dir) {
+  try { return JSON.parse(fs.readFileSync(connectorsPath(dir), "utf8")); } catch { return {}; }
+}
+function writeConnectors(dir, conns) {
+  fs.mkdirSync(ledgerDir(dir), { recursive: true });
+  fs.writeFileSync(connectorsPath(dir), JSON.stringify(conns, null, 2));
+}
 
 module.exports = {
   INVOKE_WEB, home, globalConfigPath, readGlobalConfig, writeGlobalConfig,
   projectPath, findProject, readProject, writeProject, ledgerDir,
+  connectorsPath, readConnectors, writeConnectors,
 };

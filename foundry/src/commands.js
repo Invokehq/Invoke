@@ -6,6 +6,19 @@ const { spawn } = require("node:child_process");
 const store = require("./store");
 const { Ledger } = require("./ledger");
 const { runTool, BUILTINS } = require("./tools");
+const mcp = require("./mcp");
+
+// Execute a tool locally: a connector tool ("<connector>.<tool>") proxies to its MCP
+// server; otherwise it's a built-in. The ledger (dedup + receipt) wraps this in run().
+async function executeLocal(dir, tool, params) {
+  const conns = store.readConnectors(dir);
+  const dot = tool.indexOf(".");
+  if (dot > 0) {
+    const cname = tool.slice(0, dot);
+    if (conns[cname]) return mcp.call(conns[cname].url, tool.slice(dot + 1), params);
+  }
+  return runTool(tool, params);
+}
 
 const b = (s) => `\x1b[1m${s}\x1b[0m`;
 const dim = (s) => `\x1b[2m${s}\x1b[0m`;
@@ -152,7 +165,7 @@ async function run(args) {
   const t0 = Date.now();
   let result, ok = true;
   try {
-    result = await runTool(tool, params);
+    result = await executeLocal(dir, tool, params);
   } catch (e) {
     ok = false; result = { error: String(e.message || e) };
   }
@@ -249,7 +262,11 @@ async function receiptsCloud(project, args) {
 
 // ─────────────────────────────── workspace (active target) ───────────────────────────────
 async function workspace(args) {
-  if (args._[0] === "use") return workspaceUse(args);
+  const sub = args._[0];
+  if (sub === "use") return workspaceUse(args);
+  if (sub === "connect") return workspaceConnect(args);
+  if (sub === "tools") return workspaceTools(args);
+  if (sub === "setup") return workspaceSetup(args);
   const dir = requireProject();
   const project = store.readProject(dir);
   const cfg = store.readGlobalConfig();
@@ -257,7 +274,10 @@ async function workspace(args) {
   console.log(`Workspace ${dim("— the active target for run / receipts")}`);
   if (target === "local") {
     const n = new Ledger(store.ledgerDir(dir)).list().length;
+    const conns = Object.keys(store.readConnectors(dir));
     console.log(`  active:  ${green("local")} ${dim("sandbox")}   ${dim(n + " effect(s), .foundry/ledger.json")}`);
+    console.log(`  tools:   ${BUILTINS.length} built-in${conns.length ? " + " + conns.length + " connector(s) " + dim("(" + conns.join(", ") + ")") : ""}`);
+    if (project.budget_usd) console.log(`  budget:  $${Number(project.budget_usd).toFixed(2)} ${dim("cap")}`);
     const pushed = project.invoke && project.invoke.workspace;
     console.log(`  cloud:   ${pushed ? b(pushed) + dim("  — `foundry workspace use cloud`") : dim("none — `foundry push` to graduate")}`);
   } else {
@@ -274,6 +294,95 @@ async function workspace(args) {
     console.log(`  effects: ${effects} governed call(s)`);
     console.log(`  switch:  ${dim("foundry workspace use local")}`);
   }
+  return 0;
+}
+
+// foundry workspace connect <name> <mcp_url> — wire a real MCP tool into the active workspace.
+async function workspaceConnect(args) {
+  const dir = requireProject();
+  const project = store.readProject(dir);
+  const name = args._[1];
+  const url = args._[2];
+  if (!name || !url) throw new Error("Usage: foundry workspace connect <name> <mcp_url>");
+  if (activeTarget(project) === "cloud") {
+    const cfg = store.readGlobalConfig();
+    const { ok, status, json } = await invokeApi(cloudBase(project), `/v1/workspaces/${project.invoke.workspace}/connectors`, cfg.invoke_token, "POST", { name, mcp_url: url });
+    if (!ok) throw new Error(`Invoke ${status}: ${(json && (json.detail || json.message)) || "connect failed"}`);
+    const c = (json && json.connector) || {};
+    console.log(green(`✔ Connected ${b(name)}`) + ` to cloud ${b(project.invoke.workspace)} — ${c.tools_count != null ? c.tools_count : "?"} tool(s) governed.`);
+    console.log(dim(`  run one:  foundry run ${name}.<tool> '<json>'   ·   list:  foundry workspace tools`));
+    return 0;
+  }
+  // local: handshake the MCP server, import its tool list into the local sandbox.
+  const { tools } = await mcp.connect(url);
+  const conns = store.readConnectors(dir);
+  conns[name] = { url, tools: tools.map((t) => t.name), connected_at: new Date().toISOString() };
+  store.writeConnectors(dir, conns);
+  console.log(green(`✔ Connected ${b(name)}`) + ` — ${tools.length} tool(s), governed by your local ledger.`);
+  for (const t of tools.slice(0, 6)) console.log(`  ${name}.${t.name}  ${dim(t.description)}`);
+  if (tools.length > 6) console.log(dim(`  …and ${tools.length - 6} more`));
+  console.log(dim(`  run one:  foundry run ${name}.${tools[0] ? tools[0].name : "<tool>"} '<json>'`));
+  return 0;
+}
+
+// foundry workspace tools — list the tools available in the active workspace.
+async function workspaceTools(args) {
+  const dir = requireProject();
+  const project = store.readProject(dir);
+  if (activeTarget(project) === "cloud") {
+    const cfg = store.readGlobalConfig();
+    const { json } = await invokeApi(cloudBase(project), `/v1/workspaces/${project.invoke.workspace}/mcp`, cfg.invoke_token, "POST",
+      { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+    const tools = (json && json.result && json.result.tools) || [];
+    if (args.json) { console.log(JSON.stringify(tools, null, 2)); return 0; }
+    console.log(`${tools.length} tool(s) in cloud ${b(project.invoke.workspace)}:`);
+    for (const t of tools) console.log(`  ${t.name}  ${dim((t.description || "").replace(/\s+/g, " ").slice(0, 70))}`);
+    return 0;
+  }
+  const conns = store.readConnectors(dir);
+  if (args.json) { console.log(JSON.stringify({ builtins: BUILTINS, connectors: conns }, null, 2)); return 0; }
+  console.log(`Built-in:  ${BUILTINS.join(", ")}`);
+  const names = Object.keys(conns);
+  if (!names.length) { console.log(dim("Connectors: none — `foundry workspace connect <name> <mcp_url>`")); return 0; }
+  for (const n of names) {
+    console.log(`${b(n)} ${dim(conns[n].url)}`);
+    for (const t of conns[n].tools) console.log(`  ${n}.${t}`);
+  }
+  return 0;
+}
+
+// foundry workspace setup — guided: connect a tool + set a budget, then confirm ready.
+async function workspaceSetup(args) {
+  const dir = requireProject();
+  const project = store.readProject(dir);
+  const target = activeTarget(project);
+  console.log(`Setting up the ${target === "cloud" ? green("cloud") : green("local")} workspace ${dim("— connect tools + a budget")}\n`);
+
+  // 1) connect a tool.  --connect name=url  (or interactive)
+  let spec = args.connect;
+  if (!spec && process.stdin.isTTY) {
+    const url = await ask("Connect an MCP tool — server URL (Enter to skip): ");
+    if (url) { const nm = await ask("  name it (e.g. deepwiki): "); spec = `${nm || "tool"}=${url}`; }
+  }
+  if (spec) {
+    const eq = spec.indexOf("=");
+    const name = eq > 0 ? spec.slice(0, eq) : spec;
+    const url = eq > 0 ? spec.slice(eq + 1) : null;
+    if (!url) throw new Error("--connect expects name=<mcp_url>");
+    await workspaceConnect(Object.assign({}, args, { _: ["connect", name, url] }));
+  } else {
+    console.log(dim("  (no tool connected — foundry workspace connect <name> <url> anytime)"));
+  }
+
+  // 2) budget.  --budget <usd>  (or interactive)
+  let budget = args.budget;
+  if (budget == null && process.stdin.isTTY) budget = await ask("\nBudget cap in USD (Enter for $5): ");
+  const usd = Number(budget) > 0 ? Number(budget) : 5;
+  project.budget_usd = usd;
+  store.writeProject(dir, project);
+  console.log(`\n${green("✔ budget")} ${b("$" + usd.toFixed(2))} ${dim(target === "cloud" ? "(cloud budget is enforced server-side; set at push)" : "(local cap, shown in `foundry workspace`)")}`);
+
+  console.log(green(`\n✔ ${project.name} is set up.`) + `  Run:  ${b("foundry run <tool> '<json>'")}  ·  see tools:  ${b("foundry workspace tools")}`);
   return 0;
 }
 

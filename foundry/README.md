@@ -32,12 +32,19 @@ as Invoke's cloud, on your disk:
 |---|---|
 | `foundry init [name]` | Create `foundry.json` + a local governed ledger under `.foundry/` |
 | `foundry run [tool] [json]` | Run a tool/agent through the ledger. `--key K` (idempotency), `--agent A`, `--json` |
-| `foundry receipts [--verify]` | List receipts, or verify the signed hash-chain |
-| `foundry status` | Project, local workspace, and Invoke link state |
+| `foundry receipts [--verify]` | List receipts (active workspace), or verify the signed hash-chain |
+| `foundry workspace` | Show the active workspace — target, tools, budget |
+| `foundry workspace use <local\|cloud\|ws_id>` | Switch what `run`/`receipts` target |
+| `foundry workspace connect <name> <mcp_url>` | Connect a real MCP tool server (governed) |
+| `foundry workspace setup [--connect n=url] [--budget usd]` | Guided: connect a tool + set a budget |
+| `foundry workspace tools` | List available tools |
+| `foundry status` | Project, active target, and Invoke link state |
 | `foundry login [--token K]` | Link this machine to Invoke (opens the web app) |
-| `foundry push` | Graduate the local workspace to a durable cloud one *(prototype: stubbed)* |
+| `foundry push` | Graduate the local workspace to a durable cloud one |
 
-Built-in tools: `echo`, `time`, `http.get '{"url":"…"}'`. In Invoke these become governed connectors.
+Built-in tools: `echo`, `time`, `http.get`. **Connect real tools** with `foundry workspace connect`
+(e.g. `foundry workspace connect deepwiki https://mcp.deepwiki.com/mcp`) — any MCP server, governed by
+the ledger locally *and* in the cloud. `run`/`receipts` follow the active workspace; no `--cloud` flag.
 
 ## Example
 

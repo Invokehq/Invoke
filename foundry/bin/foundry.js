@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 "use strict";
+// Prefer IPv4: some hosts (and WSL) advertise AAAA records but have broken IPv6, so
+// Node's default resolution can pick an unreachable v6 address and time out.
+try { require("node:dns").setDefaultResultOrder("ipv4first"); } catch { /* older node */ }
 const commands = require("../src/commands");
 const pkg = require("../package.json");
 
@@ -45,7 +48,11 @@ ${bold("BUILD")}
                             --key K    idempotency key (rerun -> duplicate blocked)
                             --agent A  attribute to an agent    --json
   receipts [--verify]      List receipts (active workspace), or verify the chain
-  workspace [use TARGET]   Show the active workspace, or switch: local | cloud | ws_id
+  workspace                Show the active workspace (target, tools, budget)
+    workspace use TARGET     Switch target: local | cloud | ws_id
+    workspace connect N URL  Connect an MCP tool server (governed)
+    workspace setup          Guided: connect a tool + set a budget
+    workspace tools          List available tools
   status                   Show project, target, and Invoke link
 
 ${bold("DEPLOY (to Invoke)")}
