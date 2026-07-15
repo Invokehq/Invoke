@@ -48,6 +48,7 @@ ${bold("BUILD")}
                             --key K    idempotency key (rerun -> duplicate blocked)
                             --agent A  attribute to an agent    --json
   receipts [--verify]      List receipts (active workspace), or verify the chain
+  trace                    The execution pipeline: every governed step, cost, and receipt
   workspace                Show the active workspace (target, tools, budget)
     workspace use TARGET     Switch target: local | cloud | ws_id
     workspace connect N URL  Connect an MCP tool server (governed)
@@ -78,7 +79,7 @@ async function main() {
   const table = {
     login: commands.login, init: commands.init, run: commands.run,
     receipts: commands.receipts, status: commands.status, push: commands.push,
-    workspace: commands.workspace, serve: commands.serve,
+    workspace: commands.workspace, serve: commands.serve, trace: commands.trace,
   };
   const fn = table[cmd];
   if (!fn) {

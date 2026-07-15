@@ -16,9 +16,12 @@ test("aggregateTools namespaces connector tools and includes built-ins", () => {
   assert.ok(names.includes("deepwiki.ask_question"));
 });
 
-test("ledger records the Execution type (model) and still verifies", () => {
+test("ledger records the Execution type + duration/cost annotations and still verifies", () => {
   const l = new Ledger(fs.mkdtempSync(path.join(os.tmpdir(), "fdr-")));
-  const e = l.commit({ agent: "planner", tool: "gpt-5", params: { p: 1 }, result: { ok: 1 }, type: "model" });
+  const e = l.commit({ agent: "planner", tool: "gpt-5", params: { p: 1 }, result: { ok: 1 }, type: "model", duration_ms: 1200, cost_micros: 40000 });
   assert.equal(e.type, "model");
+  assert.equal(e.duration_ms, 1200);
+  assert.equal(e.cost_micros, 40000);
+  // duration/cost are annotations, NOT in the receipt hash — the ledger still verifies.
   assert.equal(l.verify().ok, true);
 });

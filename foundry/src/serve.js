@@ -117,7 +117,7 @@ async function handleCall(id, params, ctx) {
     isErr = true;
     result = { content: [{ type: "text", text: String((e && e.message) || e) }], isError: true };
   }
-  const eff = led.commit({ agent, tool: name, params: clean, key, result, type: "tool" });
+  const eff = led.commit({ agent, tool: name, params: clean, key, result, type: "tool", duration_ms: Date.now() - t0 });
   log(`${isErr ? "err " : "ok  "} ${name} ${Date.now() - t0}ms agent=${agent} -> receipt ${eff.receipt.number}`);
   ok(id, asMcpResult(result));
 }

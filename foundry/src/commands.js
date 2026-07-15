@@ -169,7 +169,7 @@ async function run(args) {
   } catch (e) {
     ok = false; result = { error: String(e.message || e) };
   }
-  const effect = led.commit({ agent, tool, params, key, result });
+  const effect = led.commit({ agent, tool, params, key, result, duration_ms: Date.now() - t0 });
   if (args.json) { console.log(JSON.stringify({ decision: ok ? "committed" : "committed_error", effect }, null, 2)); return ok ? 0 : 1; }
 
   console.log((ok ? green("✔ committed") : yellow("✔ committed (tool error captured)")) +
@@ -257,6 +257,64 @@ async function receiptsCloud(project, args) {
     console.log(`${(e.effect_id || "-")}\t${(e.agent_id || "-").slice(0, 12)}\t${(e.target || e.action_type || "-").slice(0, 12)}\t${(e.status || "-").slice(0, 9)}\t${(e.created_at || "").slice(11, 19)}`);
   }
   console.log(dim(`\n${effects.length} governed call(s) in the cloud.`));
+  return 0;
+}
+
+// ─────────────────────────────── trace (the execution pipeline) ───────────────────────────────
+function fmtDur(ms) {
+  if (ms == null) return "—";
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+function fmtCostMicros(micros) {
+  const m = Number(micros) || 0;
+  return "$" + (m > 0 && m < 10000 ? (m / 1e6).toFixed(4) : (m / 1e6).toFixed(2));
+}
+function execStatus(result) {
+  if (result && (result.isError || result.error)) return "error";
+  return "ok";
+}
+const TYPE_ICON = { model: "◇", tool: "▸", http: "⇄", memory: "▨", approval: "✋", mcp: "▸" };
+
+async function trace(args) {
+  const dir = requireProject();
+  const project = store.readProject(dir);
+  let rows, target;
+  if (activeTarget(project) === "cloud") {
+    const cfg = store.readGlobalConfig();
+    const ws = project.invoke.workspace;
+    const { json } = await invokeApi(cloudBase(project), `/v1/workspaces/${ws}/effects?limit=${args.limit || 100}`, cfg.invoke_token);
+    rows = ((json && json.effects) || []).slice().reverse().map((e) => ({
+      agent: e.agent_id, tool: e.target || e.action_type, type: /model/.test(e.action_type || "") ? "model" : "tool",
+      dur: e.duration_ms, cost: e.cost_micros, status: e.status, receipt: e.effect_id,
+    }));
+    target = `cloud ${ws}`;
+  } else {
+    rows = new Ledger(store.ledgerDir(dir)).list().map((e) => ({
+      agent: e.agent_id, tool: e.tool, type: e.type || "tool",
+      dur: e.duration_ms, cost: e.cost_micros, status: execStatus(e.result), receipt: e.receipt.number,
+    }));
+    target = "local";
+  }
+  if (args.json) { console.log(JSON.stringify({ target, executions: rows }, null, 2)); return 0; }
+  if (!rows.length) { console.log(`No executions yet in ${target}. Run one, or point your agent at \`foundry serve\`.`); return 0; }
+
+  const totalDur = rows.reduce((s, r) => s + (r.dur || 0), 0);
+  const totalCost = rows.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  console.log(`${b("Trace")} ${dim("— " + project.name + " (" + target + ")")}   ${rows.length} execution(s) · ${fmtDur(totalDur)} · ${fmtCostMicros(totalCost)}\n`);
+  rows.forEach((r, i) => {
+    const good = r.status === "ok" || r.status === "committed";
+    const bad = r.status === "error" || r.status === "failed";
+    const stat = good ? green("✔") : bad ? "\x1b[31m✗\x1b[0m" : yellow("·");
+    const agent = (r.agent || "-").slice(0, 14).padEnd(14);
+    const tool = (r.tool || "-").slice(0, 26).padEnd(26);
+    const type = (r.type || "").padEnd(6);
+    const dur = fmtDur(r.dur).padStart(6);
+    const cost = fmtCostMicros(r.cost).padStart(8);
+    console.log(`  ${stat} ${TYPE_ICON[r.type] || "▸"} ${b(agent)} ${tool} ${dim(type)} ${dur} ${cost}  ${dim(r.receipt || "")}`);
+    if (i < rows.length - 1) console.log(`  ${dim("↓")}`);
+  });
+  const agents = [...new Set(rows.map((r) => r.agent).filter(Boolean))];
+  console.log(dim(`\n  agents: ${agents.join(", ")}   ·   prove it: foundry receipts --verify`));
   return 0;
 }
 
@@ -475,7 +533,7 @@ async function serve(args) {
   return 0;
 }
 
-module.exports = { login, init, run, receipts, status, push, workspace, serve };
+module.exports = { login, init, run, receipts, status, push, workspace, serve, trace };
 
 function parseJson(s) {
   try { const v = JSON.parse(s); if (v && typeof v === "object") return v; throw 0; }

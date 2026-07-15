@@ -33,6 +33,7 @@ as Invoke's cloud, on your disk:
 | `foundry init [name]` | Create `foundry.json` + a local governed ledger under `.foundry/` |
 | `foundry run [tool] [json]` | Run a tool/agent through the ledger. `--key K` (idempotency), `--agent A`, `--json` |
 | `foundry receipts [--verify]` | List receipts (active workspace), or verify the signed hash-chain |
+| `foundry trace` | The execution pipeline — every governed step, agent, duration, cost, receipt |
 | `foundry workspace` | Show the active workspace — target, tools, budget |
 | `foundry workspace use <local\|cloud\|ws_id>` | Switch what `run`/`receipts` target |
 | `foundry workspace connect <name> <mcp_url>` | Connect a real MCP tool server (governed) |
