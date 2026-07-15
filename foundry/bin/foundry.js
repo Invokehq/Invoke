@@ -39,13 +39,14 @@ const HELP = `${bold("foundry")} — forge AI agents locally, then deploy to Inv
 ${bold("USAGE")}
   foundry <command> [options]
 
-${bold("BUILD (local, no account)")}
+${bold("BUILD")}
   init [name]              Forge a local governed workspace (on-disk ledger)
-  run [tool] [json]        Run an agent/tool through the ledger — exactly-once, receipted
+  run [tool] [json]        Run an agent/tool against the active workspace — exactly-once
                             --key K    idempotency key (rerun -> duplicate blocked)
                             --agent A  attribute to an agent    --json
-  receipts [--verify]      List local receipts, or verify the signed hash-chain
-  status                   Show project, local workspace, and Invoke link
+  receipts [--verify]      List receipts (active workspace), or verify the chain
+  workspace [use TARGET]   Show the active workspace, or switch: local | cloud | ws_id
+  status                   Show project, target, and Invoke link
 
 ${bold("DEPLOY (to Invoke)")}
   login [--token K]        Link this machine to Invoke (opens the web app)
@@ -65,6 +66,7 @@ async function main() {
   const table = {
     login: commands.login, init: commands.init, run: commands.run,
     receipts: commands.receipts, status: commands.status, push: commands.push,
+    workspace: commands.workspace,
   };
   const fn = table[cmd];
   if (!fn) {
