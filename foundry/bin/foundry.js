@@ -49,6 +49,7 @@ ${bold("BUILD")}
                             --agent A  attribute to an agent    --json
   receipts [--verify]      List receipts (active workspace), or verify the chain
   trace                    The execution pipeline: every governed step, cost, and receipt
+  diff REF1 REF2           Compare two executions — cost, latency, output (why A vs B)
   policy [allow|deny|approve|rm|test] PATTERN
                            Execution control — gate tools/models (deny > approve > allow)
   workspace                Show the active workspace (target, tools, budget)
@@ -84,7 +85,7 @@ async function main() {
     login: commands.login, init: commands.init, run: commands.run,
     receipts: commands.receipts, status: commands.status, push: commands.push,
     workspace: commands.workspace, serve: commands.serve, trace: commands.trace,
-    model: commands.model, policy: commands.policy,
+    model: commands.model, policy: commands.policy, diff: commands.diff,
   };
   const fn = table[cmd];
   if (!fn) {

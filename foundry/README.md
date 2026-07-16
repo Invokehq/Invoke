@@ -35,6 +35,7 @@ as Invoke's cloud, on your disk:
 | `foundry receipts [--verify]` | List receipts (active workspace), or verify the signed hash-chain |
 | `foundry policy [allow\|deny\|approve\|rm\|test] <pattern>` | Execution control — gate tools/models (deny > approve > allow) |
 | `foundry trace` | The execution pipeline — every governed step, agent, duration, cost, receipt |
+| `foundry diff <ref1> <ref2>` | Compare two executions — cost, latency, output ("why A vs B") |
 | `foundry serve` | Governed MCP gateway (stdio) — point Claude Code/Cursor at it; tool calls become Executions |
 | `foundry model serve [--port] [--upstream]` | Governed LLM proxy (OpenAI-compatible) — model calls become Executions (cost, budget, cache) |
 | `foundry workspace` | Show the active workspace — target, tools, budget |

@@ -340,6 +340,64 @@ async function trace(args) {
   return 0;
 }
 
+// ─────────────────────────────── diff (why A vs B) ───────────────────────────────
+function textPreview(result) {
+  if (!result || typeof result !== "object") return String(result ?? "");
+  if (Array.isArray(result.choices) && result.choices[0]) return String(result.choices[0].message ? result.choices[0].message.content : "").trim();
+  if (Array.isArray(result.content) && result.content[0]) return String(result.content[0].text || "").trim();
+  if (result.error || result.denied || result.blocked) return JSON.stringify(result);
+  return JSON.stringify(result);
+}
+function diffPair(label, av, bv) {
+  const same = av === bv;
+  const mark = same ? dim("=") : yellow("≠");
+  return `  ${label.padEnd(10)} ${mark}  ${(av || "-").toString().padEnd(24)} ${same ? "" : (bv || "-")}`;
+}
+async function diff(args) {
+  const dir = requireProject();
+  const project = store.readProject(dir);
+  const [ref1, ref2] = [args._[0], args._[1]];
+  if (!ref1 || !ref2) throw new Error("Usage: foundry diff <ref1> <ref2>   (receipt #ids or effect ids)");
+
+  let list;
+  if (activeTarget(project) === "cloud") {
+    const cfg = store.readGlobalConfig();
+    const { json } = await invokeApi(cloudBase(project), `/v1/workspaces/${project.invoke.workspace}/effects?limit=500`, cfg.invoke_token);
+    list = ((json && json.effects) || []).map((e) => ({ id: e.effect_id, num: e.effect_id, type: /model/.test(e.action_type || "") ? "model" : "tool", agent: e.agent_id, tool: e.target || e.action_type, status: e.status, dur: e.duration_ms, cost: e.cost_micros, result: e.result }));
+  } else {
+    list = new Ledger(store.ledgerDir(dir)).list().map((e) => ({ id: e.effect_id, num: e.receipt.number, type: e.type, agent: e.agent_id, tool: e.tool, status: e.status, dur: e.duration_ms, cost: e.cost_micros, result: e.result }));
+  }
+  const find = (ref) => { const r = ref.replace(/^#/, ""); return list.find((e) => e.num === ref || e.num === "#" + r || e.id === ref || (e.id && e.id.startsWith(r)) || (e.num && e.num.replace(/^#/, "").startsWith(r))); };
+  const A = find(ref1), B = find(ref2);
+  if (!A) throw new Error(`no execution matching ${ref1}`);
+  if (!B) throw new Error(`no execution matching ${ref2}`);
+
+  if (args.json) { console.log(JSON.stringify({ a: A, b: B }, null, 2)); return 0; }
+  const pa = textPreview(A.result), pb = textPreview(B.result);
+  console.log(`${b("Diff")}  ${dim(A.num + "  vs  " + B.num)}\n`);
+  console.log(`  ${dim("field".padEnd(10))}     ${dim(String(A.num).padEnd(24))} ${dim(B.num)}`);
+  console.log(diffPair("type", A.type, B.type));
+  console.log(diffPair("agent", A.agent, B.agent));
+  console.log(diffPair("tool", A.tool, B.tool));
+  console.log(diffPair("status", A.status, B.status));
+  console.log(diffPair("duration", fmtDur(A.dur), fmtDur(B.dur)));
+  console.log(diffPair("cost", fmtCostMicros(A.cost), fmtCostMicros(B.cost)));
+  console.log(diffPair("output", pa === pb ? "same" : "differ", pa === pb ? "same" : ""));
+  if (pa !== pb) {
+    console.log(`\n  ${dim(A.num + " output:")} ${pa.replace(/\s+/g, " ").slice(0, 90)}`);
+    console.log(`  ${dim(B.num + " output:")} ${pb.replace(/\s+/g, " ").slice(0, 90)}`);
+  }
+  // the insight line
+  const notes = [];
+  const ca = Number(A.cost) || 0, cb = Number(B.cost) || 0;
+  if (ca && cb && ca !== cb) { const lo = ca < cb ? A : B; notes.push(`${lo.num} ${(Math.max(ca, cb) / Math.min(ca, cb)).toFixed(1)}× cheaper`); }
+  if (A.dur && B.dur && A.dur !== B.dur) { const f = A.dur < B.dur ? A : B; notes.push(`${f.num} ${(Math.max(A.dur, B.dur) / Math.min(A.dur, B.dur)).toFixed(1)}× faster`); }
+  if (A.status !== B.status) notes.push(`status differs (${A.status} vs ${B.status})`);
+  notes.push(pa === pb ? "same output" : "outputs differ");
+  console.log(dim(`\n  ↳ ${notes.join(" · ")}`));
+  return 0;
+}
+
 // ─────────────────────────────── workspace (active target) ───────────────────────────────
 async function workspace(args) {
   const sub = args._[0];
@@ -619,7 +677,7 @@ async function policyCmd(args) {
   return 0;
 }
 
-module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd };
+module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd, diff };
 
 function parseJson(s) {
   try { const v = JSON.parse(s); if (v && typeof v === "object") return v; throw 0; }
