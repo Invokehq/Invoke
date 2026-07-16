@@ -5,7 +5,7 @@ const readline = require("node:readline");
 const { spawn } = require("node:child_process");
 const store = require("./store");
 const { Ledger } = require("./ledger");
-const { runTool, BUILTINS } = require("./tools");
+const { runTool, BUILTINS, toolType } = require("./tools");
 const mcp = require("./mcp");
 const policy = require("./policy");
 const red = (s) => `\x1b[31m${s}\x1b[0m`;
@@ -167,7 +167,7 @@ async function run(args) {
   // Policy gate — deny/approve before anything executes (local target).
   const decision = policy.evaluate(policy.loadPolicies(project), tool);
   if (decision.effect === "deny") {
-    const e = led.commit({ agent, tool, params, key, status: "denied", result: { denied: true, rule: decision.rule }, duration_ms: 0 });
+    const e = led.commit({ agent, tool, params, key, type: toolType(tool), status: "denied", result: { denied: true, rule: decision.rule }, duration_ms: 0 });
     console.log(red("✗ denied by policy") + ` — ${b(tool)} matches deny rule ${b(decision.rule)}.  ${dim(e.receipt.number)}`);
     return 1;
   }
@@ -177,7 +177,7 @@ async function run(args) {
       approved = (await ask(`${yellow("⚠")} ${b(tool)} requires approval (rule ${decision.rule}). Approve? [y/N] `)).toLowerCase().startsWith("y");
     }
     if (!approved) {
-      const e = led.commit({ agent, tool, params, key, status: "blocked", result: { blocked: true, reason: "approval required", rule: decision.rule }, duration_ms: 0 });
+      const e = led.commit({ agent, tool, params, key, type: toolType(tool), status: "blocked", result: { blocked: true, reason: "approval required", rule: decision.rule }, duration_ms: 0 });
       console.log(yellow("⧗ blocked") + ` — ${b(tool)} needs approval (rule ${b(decision.rule)}). Re-run with ${b("--approve")}.  ${dim(e.receipt.number)}`);
       return 1;
     }
@@ -203,7 +203,7 @@ async function run(args) {
   } catch (e) {
     ok = false; result = { error: String(e.message || e) };
   }
-  const effect = led.commit({ agent, tool, params, key, result, duration_ms: Date.now() - t0 });
+  const effect = led.commit({ agent, tool, params, key, result, type: toolType(tool), duration_ms: Date.now() - t0 });
   if (args.json) { console.log(JSON.stringify({ decision: ok ? "committed" : "committed_error", effect }, null, 2)); return ok ? 0 : 1; }
 
   console.log((ok ? green("✔ committed") : yellow("✔ committed (tool error captured)")) +
@@ -307,7 +307,7 @@ function execStatus(result) {
   if (result && (result.isError || result.error)) return "error";
   return "ok";
 }
-const TYPE_ICON = { model: "◇", tool: "▸", http: "⇄", memory: "▨", approval: "✋", mcp: "▸" };
+const TYPE_ICON = { model: "◇", tool: "▸", http: "⇄", file: "▤", memory: "▨", approval: "✋", mcp: "▸" };
 
 async function trace(args) {
   const dir = requireProject();

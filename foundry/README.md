@@ -48,7 +48,10 @@ as Invoke's cloud, on your disk:
 | `foundry login [--token K]` | Link this machine to Invoke (opens the web app) |
 | `foundry push` | Graduate the local workspace to a durable cloud one |
 
-Built-in tools: `echo`, `time`, `http.get`. **Connect real tools** with `foundry workspace connect`
+Built-in execution adapters: `echo` · `time` · **`http.get`/`http.post`/`http.request`** (governed HTTP) ·
+**`file.read`/`file.write`** (governed, sandboxed to the workspace). Each is a governed Execution
+(type `http`/`file`) — policy-gated, deduped, receipted, and typed in `trace` (⇄ / ▤).
+**Connect real tools** with `foundry workspace connect`
 (e.g. `foundry workspace connect deepwiki https://mcp.deepwiki.com/mcp`) — any MCP server, governed by
 the ledger locally *and* in the cloud. `run`/`receipts` follow the active workspace; no `--cloud` flag.
 

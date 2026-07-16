@@ -8,7 +8,7 @@
 // way — every call is an Execution, the type just selects the adapter underneath.
 const readline = require("node:readline");
 const { Ledger } = require("./ledger");
-const { runTool, BUILTINS } = require("./tools");
+const { runTool, BUILTINS, toolType } = require("./tools");
 const mcp = require("./mcp");
 const store = require("./store");
 const policy = require("./policy");
@@ -17,10 +17,15 @@ const PROTOCOL = "2025-06-18";
 const VERSION = require("../package.json").version;
 
 function builtinDefs() {
+  const obj = (props, req) => ({ type: "object", properties: props || {}, required: req || [] });
   return [
-    { name: "echo", description: "Echo the params back.", inputSchema: { type: "object" } },
-    { name: "time", description: "Current time.", inputSchema: { type: "object" } },
-    { name: "http.get", description: "HTTP GET a URL.", inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
+    { name: "echo", description: "Echo the params back.", inputSchema: obj() },
+    { name: "time", description: "Current time.", inputSchema: obj() },
+    { name: "http.get", description: "Governed HTTP GET.", inputSchema: obj({ url: { type: "string" } }, ["url"]) },
+    { name: "http.post", description: "Governed HTTP POST.", inputSchema: obj({ url: { type: "string" }, body: {} }, ["url"]) },
+    { name: "http.request", description: "Governed HTTP request (any method).", inputSchema: obj({ method: { type: "string" }, url: { type: "string" }, headers: { type: "object" }, body: {} }, ["url"]) },
+    { name: "file.read", description: "Read a file in the workspace (governed).", inputSchema: obj({ path: { type: "string" } }, ["path"]) },
+    { name: "file.write", description: "Write a file in the workspace (governed).", inputSchema: obj({ path: { type: "string" }, content: { type: "string" } }, ["path"]) },
   ];
 }
 
@@ -107,7 +112,7 @@ async function handleCall(id, params, ctx) {
   const decision = policy.evaluate(policy.loadPolicies(project), name);
   if (decision.effect !== "allow") {
     const status = decision.effect === "deny" ? "denied" : "blocked";
-    const eff = led.commit({ agent, tool: name, params: clean, key, status, result: { [status]: true, rule: decision.rule }, duration_ms: 0 });
+    const eff = led.commit({ agent, tool: name, params: clean, key, type: toolType(name), status, result: { [status]: true, rule: decision.rule }, duration_ms: 0 });
     log(`${status} ${name} by policy ${decision.rule} -> receipt ${eff.receipt.number}`);
     return ok(id, { content: [{ type: "text", text: `Foundry ${status} '${name}' — policy rule '${decision.rule}'${decision.effect === "approve" ? " requires human approval" : ""}.` }], isError: true });
   }
@@ -127,7 +132,7 @@ async function handleCall(id, params, ctx) {
     isErr = true;
     result = { content: [{ type: "text", text: String((e && e.message) || e) }], isError: true };
   }
-  const eff = led.commit({ agent, tool: name, params: clean, key, result, type: "tool", duration_ms: Date.now() - t0 });
+  const eff = led.commit({ agent, tool: name, params: clean, key, result, type: toolType(name), duration_ms: Date.now() - t0 });
   log(`${isErr ? "err " : "ok  "} ${name} ${Date.now() - t0}ms agent=${agent} -> receipt ${eff.receipt.number}`);
   ok(id, asMcpResult(result));
 }
