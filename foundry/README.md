@@ -34,6 +34,8 @@ as Invoke's cloud, on your disk:
 | `foundry run [tool] [json]` | Run a tool/agent through the ledger. `--key K` (idempotency), `--agent A`, `--json` |
 | `foundry receipts [--verify]` | List receipts (active workspace), or verify the signed hash-chain |
 | `foundry trace` | The execution pipeline — every governed step, agent, duration, cost, receipt |
+| `foundry serve` | Governed MCP gateway (stdio) — point Claude Code/Cursor at it; tool calls become Executions |
+| `foundry model serve [--port] [--upstream]` | Governed LLM proxy (OpenAI-compatible) — model calls become Executions (cost, budget, cache) |
 | `foundry workspace` | Show the active workspace — target, tools, budget |
 | `foundry workspace use <local\|cloud\|ws_id>` | Switch what `run`/`receipts` target |
 | `foundry workspace connect <name> <mcp_url>` | Connect a real MCP tool server (governed) |
@@ -72,5 +74,17 @@ foundry run echo '{"msg":"hi"}' --key demo
 foundry run echo '{"msg":"hi"}' --key demo     # ⧗ duplicate blocked — reconciled to the receipt
 foundry receipts --verify                       # Ledger valid — 1 receipt(s), head …
 ```
+
+## Everything is an Execution
+
+Foundry governs every side effect an agent produces — not just tools. A **tool call**, an
+**LLM call**, an **MCP request**: each is an `Execution` with a `type`, and each gets the
+same treatment — identity, dedup/exactly-once, cost, a signed receipt, and a line in `trace`.
+
+- `foundry serve` puts Foundry **between your coding agent and its tools** (MCP gateway).
+- `foundry model serve` puts Foundry **in front of the model** (OpenAI-compatible proxy):
+  point `OPENAI_BASE_URL` at it and every completion is costed, budgeted, and cached
+  (identical request → cache hit → $0). `foundry trace` then shows the whole reasoning
+  pipeline — model *and* tool steps — with per-step cost.
 
 Requires Node ≥ 18. Zero dependencies. Prototype — `v0.1.0`.

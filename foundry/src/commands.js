@@ -533,7 +533,23 @@ async function serve(args) {
   return 0;
 }
 
-module.exports = { login, init, run, receipts, status, push, workspace, serve, trace };
+// ─────────────────────────────── model (governed LLM proxy) ───────────────────────────────
+async function model(args) {
+  if (args._[0] === "serve") {
+    const dir = requireProject();
+    process.stderr.write(green("foundry model serve") + dim(" — governed LLM proxy (OpenAI-compatible)\n"));
+    const { serveModel } = require("./model");
+    await serveModel(dir, { port: args.port, upstream: args.upstream, keyEnv: args.key });
+    return 0;
+  }
+  console.log(`${b("foundry model")} — govern model calls as Executions (cost, budget, cache).`);
+  console.log(`  ${b("foundry model serve")} [--port 4000] [--upstream URL] [--key ENVVAR]`);
+  console.log(dim("  Point your agent's SDK at the proxy:  OPENAI_BASE_URL=http://localhost:4000/v1"));
+  console.log(dim("  Then see spend + latency in  foundry trace  ·  foundry receipts"));
+  return 0;
+}
+
+module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model };
 
 function parseJson(s) {
   try { const v = JSON.parse(s); if (v && typeof v === "object") return v; throw 0; }

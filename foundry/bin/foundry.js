@@ -60,6 +60,8 @@ ${bold("SERVE (run your coding agent on Foundry)")}
   serve                    Governed MCP gateway over stdio — point Claude Code/Cursor at it;
                             every tool call becomes a receipted Execution
                             ${dim("claude mcp add foundry -- foundry serve")}
+  model serve              Governed LLM proxy (OpenAI-compatible) — model calls become
+                            Executions: cost, budget, cache. ${dim("OPENAI_BASE_URL=localhost:4000/v1")}
 
 ${bold("DEPLOY (to Invoke)")}
   login [--token K]        Link this machine to Invoke (opens the web app)
@@ -80,6 +82,7 @@ async function main() {
     login: commands.login, init: commands.init, run: commands.run,
     receipts: commands.receipts, status: commands.status, push: commands.push,
     workspace: commands.workspace, serve: commands.serve, trace: commands.trace,
+    model: commands.model,
   };
   const fn = table[cmd];
   if (!fn) {
