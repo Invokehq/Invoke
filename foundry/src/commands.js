@@ -46,6 +46,19 @@ function requireProject() {
   return dir;
 }
 
+// Like requireProject, but auto-creates a minimal local workspace if there's none — so
+// `claude mcp add foundry -- foundry serve` just works in any directory (no `init` first).
+function ensureProject() {
+  const found = store.findProject();
+  if (found) return { dir: found, created: false };
+  const dir = process.cwd();
+  store.writeProject(dir, { name: path.basename(dir) || "foundry", agent: { id: "builder", tool: "http.get", params: { url: "https://api.github.com/zen" } }, invoke: { workspace: null } });
+  const led = store.ledgerDir(dir);
+  fs.mkdirSync(led, { recursive: true });
+  new Ledger(led).secret();
+  return { dir, created: true };
+}
+
 // The active target for run/receipts: "local" sandbox or the "cloud" Invoke workspace.
 function activeTarget(project) {
   return project.target === "cloud" && project.invoke && project.invoke.workspace ? "cloud" : "local";
@@ -600,10 +613,11 @@ async function push(args) {
 
 // ─────────────────────────────── serve (the MCP gateway) ───────────────────────────────
 async function serve(args) {
-  const dir = requireProject();
+  const { dir, created } = ensureProject();
   const conns = Object.keys(store.readConnectors(dir));
   // Guidance goes to stderr — stdout is the MCP JSON-RPC channel.
   process.stderr.write(green("foundry serve") + dim(" — governed MCP gateway for your coding agent\n"));
+  if (created) process.stderr.write(dim(`  initialized a local workspace here (${dir})\n`));
   if (!conns.length) {
     process.stderr.write(dim("  no tools connected yet — `foundry workspace connect <name> <mcp_url>` first.\n"));
   }
@@ -677,7 +691,36 @@ async function policyCmd(args) {
   return 0;
 }
 
-module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd, diff };
+// ─────────────────────────────── mcp (wire into a coding agent) ───────────────────────────────
+async function mcpCmd(args) {
+  const sub = args._[0] || "config";
+  const cfg = { mcpServers: { foundry: { command: "foundry", args: ["serve"] } } };
+  if (sub === "add") {
+    const client = (args.client || "claude").toLowerCase();
+    if (client === "claude") {
+      const scope = args.scope ? ["-s", String(args.scope)] : [];
+      const r = require("node:child_process").spawnSync("claude", ["mcp", "add", "foundry", ...scope, "--", "foundry", "serve"], { stdio: "inherit" });
+      if (r.error) {
+        console.log(yellow("claude CLI not found.") + " Add this to your client instead:\n" + JSON.stringify(cfg, null, 2));
+        return 1;
+      }
+      console.log(green("\n✔ foundry is wired into Claude Code.") + dim("  verify: claude mcp list   ·   then just ask it to use a tool"));
+      return r.status || 0;
+    }
+    console.log(dim(`Config for ${client} (add to its MCP settings):`));
+    console.log(JSON.stringify(cfg, null, 2));
+    return 0;
+  }
+  // config / default
+  console.log(`${b("Wire Foundry into your coding agent")} ${dim("— it governs every tool call.")}\n`);
+  console.log(`${b("Claude Code:")}   claude mcp add foundry -- foundry serve   ${dim("(or: foundry mcp add)")}`);
+  console.log(`${b("Cursor / others:")} add to the client's MCP config:`);
+  console.log(JSON.stringify(cfg, null, 2));
+  console.log(dim("\nThen: connect tools (foundry workspace connect …), and watch calls in `foundry trace`."));
+  return 0;
+}
+
+module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd, diff, mcp: mcpCmd };
 
 function parseJson(s) {
   try { const v = JSON.parse(s); if (v && typeof v === "object") return v; throw 0; }

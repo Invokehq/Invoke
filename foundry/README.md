@@ -83,6 +83,18 @@ Foundry governs every side effect an agent produces — not just tools. A **tool
 **LLM call**, an **MCP request**: each is an `Execution` with a `type`, and each gets the
 same treatment — identity, dedup/exactly-once, cost, a signed receipt, and a line in `trace`.
 
+### Wire it into your coding agent
+
+```bash
+foundry mcp add                              # Claude Code (or: claude mcp add foundry -- foundry serve)
+foundry workspace connect deepwiki https://mcp.deepwiki.com/mcp
+# now Claude Code's calls to that tool flow through Foundry — governed, receipted:
+foundry trace
+```
+
+`foundry mcp` prints the config for Cursor/Windsurf/Claude Desktop too. Verified: Claude Code
+shows `foundry: ✔ Connected`, and a tool call lands in the ledger attributed to `claude-code`.
+
 - `foundry serve` puts Foundry **between your coding agent and its tools** (MCP gateway).
 - `foundry model serve` puts Foundry **in front of the model** (OpenAI-compatible proxy):
   point `OPENAI_BASE_URL` at it and every completion is costed, budgeted, and cached

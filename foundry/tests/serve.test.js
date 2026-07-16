@@ -4,8 +4,20 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 const { aggregateTools } = require("../src/serve");
 const { Ledger } = require("../src/ledger");
+
+const BIN = path.join(__dirname, "..", "bin", "foundry.js");
+
+test("`foundry mcp` prints an MCP config that launches `foundry serve`", () => {
+  const r = spawnSync(process.execPath, [BIN, "mcp"], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /mcpServers/);
+  assert.match(r.stdout, /"foundry"/);
+  assert.match(r.stdout, /"serve"/);
+  assert.match(r.stdout, /claude mcp add foundry/);
+});
 
 test("aggregateTools namespaces connector tools and includes built-ins", () => {
   const names = aggregateTools({
