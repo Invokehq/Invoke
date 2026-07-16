@@ -33,6 +33,7 @@ as Invoke's cloud, on your disk:
 | `foundry init [name]` | Create `foundry.json` + a local governed ledger under `.foundry/` |
 | `foundry run [tool] [json]` | Run a tool/agent through the ledger. `--key K` (idempotency), `--agent A`, `--json` |
 | `foundry receipts [--verify]` | List receipts (active workspace), or verify the signed hash-chain |
+| `foundry policy [allow\|deny\|approve\|rm\|test] <pattern>` | Execution control — gate tools/models (deny > approve > allow) |
 | `foundry trace` | The execution pipeline — every governed step, agent, duration, cost, receipt |
 | `foundry serve` | Governed MCP gateway (stdio) — point Claude Code/Cursor at it; tool calls become Executions |
 | `foundry model serve [--port] [--upstream]` | Governed LLM proxy (OpenAI-compatible) — model calls become Executions (cost, budget, cache) |

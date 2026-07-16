@@ -7,6 +7,8 @@ const store = require("./store");
 const { Ledger } = require("./ledger");
 const { runTool, BUILTINS } = require("./tools");
 const mcp = require("./mcp");
+const policy = require("./policy");
+const red = (s) => `\x1b[31m${s}\x1b[0m`;
 
 // Execute a tool locally: a connector tool ("<connector>.<tool>") proxies to its MCP
 // server; otherwise it's a built-in. The ledger (dedup + receipt) wraps this in run().
@@ -148,6 +150,25 @@ async function run(args) {
     if (!tool) throw new Error("No default agent in foundry.json. Try `foundry run <tool> '<json>'`.");
   }
   const key = args.key || args["idempotency-key"] || null;
+
+  // Policy gate — deny/approve before anything executes (local target).
+  const decision = policy.evaluate(policy.loadPolicies(project), tool);
+  if (decision.effect === "deny") {
+    const e = led.commit({ agent, tool, params, key, status: "denied", result: { denied: true, rule: decision.rule }, duration_ms: 0 });
+    console.log(red("✗ denied by policy") + ` — ${b(tool)} matches deny rule ${b(decision.rule)}.  ${dim(e.receipt.number)}`);
+    return 1;
+  }
+  if (decision.effect === "approve") {
+    let approved = !!(args.approve || args.yes);
+    if (!approved && process.stdin.isTTY) {
+      approved = (await ask(`${yellow("⚠")} ${b(tool)} requires approval (rule ${decision.rule}). Approve? [y/N] `)).toLowerCase().startsWith("y");
+    }
+    if (!approved) {
+      const e = led.commit({ agent, tool, params, key, status: "blocked", result: { blocked: true, reason: "approval required", rule: decision.rule }, duration_ms: 0 });
+      console.log(yellow("⧗ blocked") + ` — ${b(tool)} needs approval (rule ${b(decision.rule)}). Re-run with ${b("--approve")}.  ${dim(e.receipt.number)}`);
+      return 1;
+    }
+  }
 
   // Follow the active target — no --cloud flag. Cloud routes through the Invoke gateway.
   if (activeTarget(project) === "cloud") return runCloud(project, { tool, params, agent, key }, args);
@@ -291,7 +312,8 @@ async function trace(args) {
   } else {
     rows = new Ledger(store.ledgerDir(dir)).list().map((e) => ({
       agent: e.agent_id, tool: e.tool, type: e.type || "tool",
-      dur: e.duration_ms, cost: e.cost_micros, status: execStatus(e.result), receipt: e.receipt.number,
+      dur: e.duration_ms, cost: e.cost_micros,
+      status: e.status && e.status !== "committed" ? e.status : execStatus(e.result), receipt: e.receipt.number,
     }));
     target = "local";
   }
@@ -303,7 +325,7 @@ async function trace(args) {
   console.log(`${b("Trace")} ${dim("— " + project.name + " (" + target + ")")}   ${rows.length} execution(s) · ${fmtDur(totalDur)} · ${fmtCostMicros(totalCost)}\n`);
   rows.forEach((r, i) => {
     const good = r.status === "ok" || r.status === "committed";
-    const bad = r.status === "error" || r.status === "failed";
+    const bad = r.status === "error" || r.status === "failed" || r.status === "denied";
     const stat = good ? green("✔") : bad ? "\x1b[31m✗\x1b[0m" : yellow("·");
     const agent = (r.agent || "-").slice(0, 14).padEnd(14);
     const tool = (r.tool || "-").slice(0, 26).padEnd(26);
@@ -549,7 +571,55 @@ async function model(args) {
   return 0;
 }
 
-module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model };
+// ─────────────────────────────── policy (execution control) ───────────────────────────────
+async function policyCmd(args) {
+  const dir = requireProject();
+  const project = store.readProject(dir);
+  const sub = args._[0];
+  const pol = policy.loadPolicies(project);
+
+  if (["allow", "deny", "approve"].includes(sub)) {
+    const pattern = args._[1];
+    if (!pattern) throw new Error(`Usage: foundry policy ${sub} <pattern>   (e.g. 'stripe.*')`);
+    project.policies = project.policies || {};
+    project.policies[sub] = [...new Set([...(project.policies[sub] || []), pattern])];
+    store.writeProject(dir, project);
+    const color = sub === "deny" ? red : sub === "approve" ? yellow : green;
+    console.log(green("✔") + ` policy ${color(sub)}: ${b(pattern)}`);
+    return 0;
+  }
+  if (sub === "rm") {
+    const pattern = args._[1];
+    project.policies = project.policies || {};
+    for (const k of ["deny", "approve", "allow"]) project.policies[k] = (project.policies[k] || []).filter((g) => g !== pattern);
+    store.writeProject(dir, project);
+    console.log(`removed ${b(pattern)} from all lists.`);
+    return 0;
+  }
+  if (sub === "test") {
+    const name = args._[1];
+    if (!name) throw new Error("Usage: foundry policy test <tool-or-model>");
+    const r = policy.evaluate(pol, name);
+    const color = r.effect === "deny" ? red : r.effect === "approve" ? yellow : green;
+    console.log(`${b(name)} -> ${color(r.effect)}${r.rule ? dim(" (rule: " + r.rule + ")") : dim(" (default)")}`);
+    return 0;
+  }
+  // show
+  const showList = (label, arr, color) => {
+    console.log(`${label}`);
+    if (arr.length) arr.forEach((g) => console.log(`  ${color(g)}`));
+    else console.log(dim("  (none)"));
+  };
+  console.log(`Policies ${dim("— evaluated on every execution · deny > approve > allow > default allow")}\n`);
+  showList(red("deny"), pol.deny, red);
+  showList(yellow("approve"), pol.approve, yellow);
+  showList(green("allow"), pol.allow, green);
+  console.log(dim("\n  add:  foundry policy deny 'stripe.*'   ·   gate:  foundry policy approve 'github.create_*'"));
+  console.log(dim("  test: foundry policy test github.read"));
+  return 0;
+}
+
+module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd };
 
 function parseJson(s) {
   try { const v = JSON.parse(s); if (v && typeof v === "object") return v; throw 0; }

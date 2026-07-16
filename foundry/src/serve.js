@@ -11,6 +11,7 @@ const { Ledger } = require("./ledger");
 const { runTool, BUILTINS } = require("./tools");
 const mcp = require("./mcp");
 const store = require("./store");
+const policy = require("./policy");
 
 const PROTOCOL = "2025-06-18";
 const VERSION = require("../package.json").version;
@@ -80,7 +81,7 @@ async function serve(dir) {
       } else if (method === "ping") {
         ok(id, {});
       } else if (method === "tools/call") {
-        await handleCall(id, params || {}, { conns, led, ok, fail, log });
+        await handleCall(id, params || {}, { conns, led, ok, fail, log, project });
       } else if (method && method.startsWith("notifications/")) {
         // notifications get no response
       } else if (id !== undefined) {
@@ -94,13 +95,22 @@ async function serve(dir) {
 }
 
 async function handleCall(id, params, ctx) {
-  const { conns, led, ok, fail, log } = ctx;
+  const { conns, led, ok, fail, log, project } = ctx;
   const name = params.name;
   const args = params.arguments || {};
   const agent = args._agent_id || "coding-agent";
   const key = args._idempotency_key || null;
   const clean = {};
   for (const k of Object.keys(args)) if (!k.startsWith("_")) clean[k] = args[k];
+
+  // Policy gate — headless, so deny AND approve both block the agent (and are ledgered).
+  const decision = policy.evaluate(policy.loadPolicies(project), name);
+  if (decision.effect !== "allow") {
+    const status = decision.effect === "deny" ? "denied" : "blocked";
+    const eff = led.commit({ agent, tool: name, params: clean, key, status, result: { [status]: true, rule: decision.rule }, duration_ms: 0 });
+    log(`${status} ${name} by policy ${decision.rule} -> receipt ${eff.receipt.number}`);
+    return ok(id, { content: [{ type: "text", text: `Foundry ${status} '${name}' — policy rule '${decision.rule}'${decision.effect === "approve" ? " requires human approval" : ""}.` }], isError: true });
+  }
 
   // Exactly-once for keyed calls: a repeat reconciles to the receipt, no re-execution.
   if (key) {

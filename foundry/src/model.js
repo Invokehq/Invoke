@@ -8,6 +8,7 @@ const https = require("node:https");
 const { URL } = require("node:url");
 const store = require("./store");
 const { Ledger } = require("./ledger");
+const policy = require("./policy");
 
 // Rough list price, USD per 1M tokens: [input, output]. Matched by substring; default is a
 // conservative fallback so unknown models still get costed (never silently $0).
@@ -50,6 +51,15 @@ function forward(upstream, key, body) {
 async function governed(project, led, upstream, key, body) {
   const agent = (body && body.metadata && body.metadata.agent) || "model";
   const model = (body && body.model) || "unknown";
+
+  // Policy gate — a model can be denied or gated (e.g. deny "gpt-5" in prod).
+  const decision = policy.evaluate(policy.loadPolicies(project), model);
+  if (decision.effect !== "allow") {
+    const status = decision.effect === "deny" ? "denied" : "blocked";
+    led.commit({ agent, tool: model, params: body, type: "model", status, result: { [status]: true, rule: decision.rule }, duration_ms: 0 });
+    const err = new Error(`model '${model}' ${status} by policy rule '${decision.rule}'`);
+    err.status = 403; throw err;
+  }
 
   // Cache first: an identical request reconciles to the prior receipt — cache hit, $0.
   // A free replay is always allowed, even when the budget is spent (it costs nothing).

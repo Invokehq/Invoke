@@ -49,6 +49,8 @@ ${bold("BUILD")}
                             --agent A  attribute to an agent    --json
   receipts [--verify]      List receipts (active workspace), or verify the chain
   trace                    The execution pipeline: every governed step, cost, and receipt
+  policy [allow|deny|approve|rm|test] PATTERN
+                           Execution control — gate tools/models (deny > approve > allow)
   workspace                Show the active workspace (target, tools, budget)
     workspace use TARGET     Switch target: local | cloud | ws_id
     workspace connect N URL  Connect an MCP tool server (governed)
@@ -82,7 +84,7 @@ async function main() {
     login: commands.login, init: commands.init, run: commands.run,
     receipts: commands.receipts, status: commands.status, push: commands.push,
     workspace: commands.workspace, serve: commands.serve, trace: commands.trace,
-    model: commands.model,
+    model: commands.model, policy: commands.policy,
   };
   const fn = table[cmd];
   if (!fn) {
