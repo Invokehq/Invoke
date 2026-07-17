@@ -8,10 +8,18 @@ Deploy to [Invoke](https://invokehq.run) when you're ready.
 ```bash
 npm install -g @invokehq/foundry
 
+foundry connect claude   # or: codex — detect your agent, wire it in, connect tools,
+                         # then watch its actions stream live. ~5 minutes to your first
+                         # governed agent session.
+```
+
+Or piece by piece:
+```bash
 foundry init            # forge a local governed workspace (no account)
 foundry run             # run an agent, governed — exactly-once + a signed receipt
+foundry trace --follow  # watch executions stream in live as your agent acts
 foundry receipts        # see what happened; --verify proves the ledger
-foundry login           # link to Invoke when you want durable, shareable, team workspaces
+foundry login           # link to Invoke for durable, shareable, team workspaces
 ```
 
 ## Why

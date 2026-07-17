@@ -6,8 +6,8 @@ try { require("node:dns").setDefaultResultOrder("ipv4first"); } catch { /* older
 const commands = require("../src/commands");
 const pkg = require("../package.json");
 
-const BOOL_FLAGS = new Set(["json", "force", "verify", "help", "version"]);
-const ALIAS = { h: "help", V: "version" };
+const BOOL_FLAGS = new Set(["json", "force", "verify", "help", "version", "follow", "no-follow", "f"]);
+const ALIAS = { h: "help", V: "version", f: "follow" };
 
 // Minimal zero-dependency arg parser: --flag, --key value, -h; rest are positionals.
 function parse(argv) {
@@ -41,6 +41,10 @@ const HELP = `${bold("foundry")} — forge AI agents locally, then deploy to Inv
 
 ${bold("USAGE")}
   foundry <command> [options]
+
+${bold("START HERE")}
+  connect [claude|codex]  Detect your agent, wire it in, connect tools, and stream its
+                            actions live. Experience Foundry in ~5 minutes.
 
 ${bold("BUILD")}
   init [name]              Forge a local governed workspace (on-disk ledger)
@@ -87,6 +91,7 @@ async function main() {
     receipts: commands.receipts, status: commands.status, push: commands.push,
     workspace: commands.workspace, serve: commands.serve, trace: commands.trace,
     model: commands.model, policy: commands.policy, diff: commands.diff, mcp: commands.mcp,
+    connect: commands.connect,
   };
   const fn = table[cmd];
   if (!fn) {

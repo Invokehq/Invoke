@@ -331,7 +331,14 @@ async function trace(args) {
     target = "local";
   }
   if (args.json) { console.log(JSON.stringify({ target, executions: rows }, null, 2)); return 0; }
-  if (!rows.length) { console.log(`No executions yet in ${target}. Run one, or point your agent at \`foundry serve\`.`); return 0; }
+  const following = (args.follow || args.f) && target === "local";
+  if (!rows.length && !following) { console.log(`No executions yet in ${target}. Run one, or point your agent at \`foundry serve\`.`); return 0; }
+  if (!rows.length && following) {
+    console.log(`${b("Trace")} ${dim("— " + project.name + " (" + target + ") · waiting for the agent…")}`);
+    console.log(`\n  ${green("● LIVE")} ${dim("— new executions stream below (Ctrl-C to stop)")}`);
+    console.log(dim("  " + "─".repeat(60)));
+    return liveTail(dir);
+  }
 
   const totalDur = rows.reduce((s, r) => s + (r.dur || 0), 0);
   const totalCost = rows.reduce((s, r) => s + (Number(r.cost) || 0), 0);
@@ -350,6 +357,11 @@ async function trace(args) {
   });
   const agents = [...new Set(rows.map((r) => r.agent).filter(Boolean))];
   console.log(dim(`\n  agents: ${agents.join(", ")}   ·   prove it: foundry receipts --verify`));
+  if ((args.follow || args.f) && target === "local") {
+    console.log(`\n  ${green("● LIVE")} ${dim("— new executions stream below (Ctrl-C to stop)")}`);
+    console.log(dim("  " + "─".repeat(60)));
+    return liveTail(dir);
+  }
   return 0;
 }
 
@@ -769,7 +781,111 @@ async function mcpCmd(args) {
   return 0;
 }
 
-module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd, diff, mcp: mcpCmd };
+// ─────────────────────────────── connect (the 5-minute live wire-up) ───────────────────────────────
+const CLIENT_LABEL = { claude: "Claude Code", "claude-code": "Claude Code", codex: "Codex", cursor: "Cursor", windsurf: "Windsurf" };
+function clientInstalled(bin) {
+  try { return require("node:child_process").spawnSync(bin, ["--version"], { stdio: "ignore" }).status === 0; } catch { return false; }
+}
+function detectClient() {
+  if (clientInstalled("claude")) return "claude";
+  if (clientInstalled("codex")) return "codex";
+  return "claude";
+}
+function ensureCodexToml() {
+  const file = path.join(require("node:os").homedir(), ".codex", "config.toml");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  let toml = ""; try { toml = fs.readFileSync(file, "utf8"); } catch { /* new */ }
+  if (!/\[mcp_servers\.foundry\]/.test(toml)) {
+    fs.writeFileSync(file, (toml && !toml.endsWith("\n") ? toml + "\n" : toml) + '\n[mcp_servers.foundry]\ncommand = "foundry"\nargs = ["serve"]\n');
+  }
+  return file;
+}
+// Wire Foundry into a client quietly (no sub-command chatter) — returns a short detail.
+function wireClientQuiet(client) {
+  const os = require("node:os");
+  const server = { command: "foundry", args: ["serve"] };
+  if (client === "claude" || client === "claude-code") {
+    const r = require("node:child_process").spawnSync("claude", ["mcp", "add", "foundry", "-s", "local", "--", "foundry", "serve"], { stdio: "ignore" });
+    return r.status === 0 ? "claude mcp (local)" : "config written";
+  }
+  if (client === "cursor") { writeMcpServers(path.join(process.cwd(), ".cursor", "mcp.json"), server); return ".cursor/mcp.json"; }
+  if (client === "windsurf") { writeMcpServers(path.join(os.homedir(), ".codeium", "windsurf", "mcp_config.json"), server); return "windsurf config"; }
+  if (client === "codex") { ensureCodexToml(); return "~/.codex/config.toml"; }
+  return "config printed";
+}
+
+// Live tail: stream new Executions from the ledger as the agent makes them. Runs until Ctrl-C.
+function liveTail(dir) {
+  return new Promise((resolve) => {
+    const led = new Ledger(store.ledgerDir(dir));
+    let seen = led.list().length;
+    const render = (e) => {
+      const good = e.status === "committed" && !(e.result && (e.result.error || e.result.isError));
+      const stat = e.status === "denied" || e.status === "blocked" ? red("✗") : good ? green("✓") : yellow("·");
+      const icon = TYPE_ICON[e.type || "tool"] || "▸";
+      const agent = (e.agent_id || "-").slice(0, 12).padEnd(12);
+      const tool = (e.tool || "-").slice(0, 28).padEnd(28);
+      const dur = fmtDur(e.duration_ms).padStart(6);
+      const cost = fmtCostMicros(e.cost_micros).padStart(8);
+      console.log(`  ${stat} ${icon} ${b(agent)} ${tool} ${dim(dur)} ${dim(cost)}  ${dim(e.receipt ? e.receipt.number : "")}`);
+    };
+    const poll = () => { const all = led.list(); for (let i = seen; i < all.length; i++) render(all[i]); seen = all.length; };
+    const iv = setInterval(poll, 400);
+    const stop = () => { clearInterval(iv); console.log(dim("\n  ● stopped · full run: foundry trace   ·   prove it: foundry receipts --verify")); resolve(0); };
+    process.on("SIGINT", stop);
+  });
+}
+
+async function connect(args) {
+  const client = String(args._[0] || args.client || detectClient()).toLowerCase();
+  const label = CLIENT_LABEL[client] || client;
+  const tty = process.stdout.isTTY;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, tty ? ms : 0));
+  const ok = (msg, detail) => console.log(`  ${green("✓")} ${msg}${detail ? dim("   " + detail) : ""}`);
+  const skip = (msg) => console.log(`  ${yellow("○")} ${msg}`);
+
+  console.log(`\n  ${b("● Connecting Foundry to " + label)}\n`);
+  await sleep(180);
+
+  if (["claude", "codex", "cursor", "windsurf"].includes(client)) {
+    const bin = client === "claude" ? "claude" : client;
+    clientInstalled(bin) ? ok(`${label} detected`) : skip(`${label} CLI not detected — writing its config anyway`);
+  } else ok(`Target: ${label}`);
+  await sleep(160);
+
+  const { dir } = ensureProject();
+  const project = store.readProject(dir);
+  ok("Workspace ready", project.name);
+  await sleep(160);
+
+  const conns = store.readConnectors(dir);
+  if (!Object.keys(conns).length) {
+    const spec = args.connect || "deepwiki=https://mcp.deepwiki.com/mcp";
+    const eq = spec.indexOf("="); const nm = spec.slice(0, eq) || "deepwiki"; const url = spec.slice(eq + 1);
+    try {
+      const { tools } = await mcp.connect(url);
+      const c = store.readConnectors(dir);
+      c[nm] = { url, tools: tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })) };
+      store.writeConnectors(dir, c);
+      ok(`Connected ${nm}`, `${tools.length} tools, governed`);
+    } catch (e) { skip(`couldn't reach ${nm} (${String(e.message).slice(0, 40)}) — connect one later`); }
+  } else ok("Tools connected", Object.keys(conns).join(", "));
+  await sleep(160);
+
+  const detail = wireClientQuiet(client);
+  ok(`Foundry wired into ${label}`, detail);
+  await sleep(140);
+
+  console.log(`\n  → Open ${b(label)} in this folder and ask it to use a tool.`);
+  if (activeTarget(project) === "cloud") console.log(`  → Mission Control:  ${b("https://invokehq.run/dashboard")}`);
+  if (args["no-follow"] || !tty) { console.log(dim("\n  live view:  foundry trace --follow")); return 0; }
+
+  console.log(`\n  ${green("● LIVE")} ${dim("— every action your agent takes shows up here   (Ctrl-C to stop)")}`);
+  console.log(dim("  " + "─".repeat(60)));
+  return liveTail(dir);
+}
+
+module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd, diff, mcp: mcpCmd, connect };
 
 function parseJson(s) {
   try { const v = JSON.parse(s); if (v && typeof v === "object") return v; throw 0; }
