@@ -8,6 +8,7 @@ const { Ledger } = require("./ledger");
 const { runTool, BUILTINS, toolType } = require("./tools");
 const mcp = require("./mcp");
 const policy = require("./policy");
+const cloud = require("./cloud");
 const red = (s) => `\x1b[31m${s}\x1b[0m`;
 
 // Execute a tool locally: a connector tool ("<connector>.<tool>") proxies to its MCP
@@ -204,11 +205,18 @@ async function run(args) {
     ok = false; result = { error: String(e.message || e) };
   }
   const effect = led.commit({ agent, tool, params, key, result, type: toolType(tool), duration_ms: Date.now() - t0 });
-  if (args.json) { console.log(JSON.stringify({ decision: ok ? "committed" : "committed_error", effect }, null, 2)); return ok ? 0 : 1; }
+
+  // If the project is graduated to Invoke, mirror this Execution to the cloud ledger so
+  // it shows up live on the dashboard. Best-effort — never fails the local run.
+  const link = cloud.cloudLink(project);
+  const mirror = link ? await cloud.mirrorEffect(link, effect) : null;
+
+  if (args.json) { console.log(JSON.stringify({ decision: ok ? "committed" : "committed_error", effect, mirrored: !!(mirror && mirror.mirrored) }, null, 2)); return ok ? 0 : 1; }
 
   console.log((ok ? green("✔ committed") : yellow("✔ committed (tool error captured)")) +
     `  ${dim(`${Date.now() - t0}ms`)}  agent=${b(agent)} tool=${b(tool)}`);
   console.log(`  receipt ${b(effect.receipt.number)}  ${dim("signed " + effect.receipt.alg)}`);
+  if (mirror && mirror.mirrored) console.log(`  ${green("↑")} mirrored to Invoke  ${dim(link.wsId + " · live on the dashboard")}`);
   console.log("  result: " + JSON.stringify(result).slice(0, 300));
   console.log(dim(`\n  run it again` + (key ? "" : " with --key K") + ` to see the duplicate guard · foundry receipts`));
   return ok ? 0 : 1;
@@ -615,11 +623,18 @@ async function push(args) {
     project.invoke = Object.assign({}, project.invoke, { workspace: wsId, base });
     store.writeProject(dir, project);
   }
-  if (args.json) { console.log(JSON.stringify({ graduated: true, workspace: wsId, base, local_effects: effects.length }, null, 2)); return 0; }
+  // Backfill: stream every committed local effect up to the cloud ledger so the dashboard
+  // isn't empty on arrival — the agents' history is there the moment you open it.
+  const link = cloud.cloudLink(store.readProject(dir));
+  const back = link ? await cloud.mirrorAll(link, effects) : { sent: 0, failed: 0 };
+  const dashUrl = `${store.INVOKE_WEB}/dashboard/runtime?ws=${wsId}`;
+
+  if (args.json) { console.log(JSON.stringify({ graduated: true, workspace: wsId, base, local_effects: effects.length, mirrored: back.sent, dashboard: dashUrl }, null, 2)); return 0; }
   console.log(green(`✔ Graduated "${project.name}" → Invoke`) + `  workspace ${b(wsId)}`);
   console.log(`  ${dim("durable, isolated, org-owned (Postgres-backed) — survives restarts, shareable with your team.")}`);
-  console.log(`  ${effects.length} local effect(s) stay in your on-disk ledger; new cloud runs are governed there.`);
-  console.log(dim(`  next: connect tools as governed connectors + route runs through the cloud gateway.`));
+  console.log(`  ${green("↑")} streamed ${b(String(back.sent))} of ${effects.length} local effect(s) to the cloud ledger` + (back.failed ? dim(`  (${back.failed} failed)`) : ""));
+  console.log(`  ${b("Watch it live:")}  ${dashUrl}`);
+  console.log(dim(`  from here, every \`foundry run\` and every tool call through \`foundry serve\` streams to the dashboard.`));
   return 0;
 }
 

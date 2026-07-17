@@ -12,6 +12,7 @@ const { runTool, BUILTINS, toolType } = require("./tools");
 const mcp = require("./mcp");
 const store = require("./store");
 const policy = require("./policy");
+const cloud = require("./cloud");
 const { runSetup } = require("./setup");
 
 const PROTOCOL = "2025-06-18";
@@ -74,6 +75,7 @@ async function serve(dir) {
   const conns = store.readConnectors(dir);
   const led = new Ledger(store.ledgerDir(dir));
   const tools = aggregateTools(conns);
+  const link = cloud.cloudLink(project); // non-null once graduated: mirror to the dashboard
 
   const write = (m) => process.stdout.write(JSON.stringify(m) + "\n");
   const log = (...a) => process.stderr.write(`[foundry] ${a.join(" ")}\n`);
@@ -82,7 +84,9 @@ async function serve(dir) {
 
   log(`serving ${tools.length} governed tool(s) from ${Object.keys(conns).length} connector(s) — "${project.name}".`);
   log(`every call is an Execution: receipted + exactly-once. see them with \`foundry receipts\`.`);
+  if (link) log(`graduated → mirroring every call to Invoke workspace ${link.wsId} (live on the dashboard).`);
 
+  const pending = []; // in-flight cloud mirrors — drained before we exit so the last call isn't lost
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
   for await (const line of rl) {
     const s = line.trim();
@@ -98,7 +102,7 @@ async function serve(dir) {
       } else if (method === "ping") {
         ok(id, {});
       } else if (method === "tools/call") {
-        await handleCall(id, params || {}, { conns, led, ok, fail, log, project, dir });
+        await handleCall(id, params || {}, { conns, led, ok, fail, log, project, dir, link, pending });
       } else if (method && method.startsWith("notifications/")) {
         // notifications get no response
       } else if (id !== undefined) {
@@ -109,10 +113,12 @@ async function serve(dir) {
       else log("error:", String((e && e.message) || e));
     }
   }
+  // stdin closed (agent disconnected): drain any in-flight mirrors so the final calls land.
+  if (pending.length) await Promise.allSettled(pending);
 }
 
 async function handleCall(id, params, ctx) {
-  const { conns, led, ok, fail, log, project, dir } = ctx;
+  const { conns, led, ok, fail, log, project, dir, link, pending } = ctx;
   const name = params.name;
   const args = params.arguments || {};
   const agent = args._agent_id || "coding-agent";
@@ -156,6 +162,9 @@ async function handleCall(id, params, ctx) {
   }
   const eff = led.commit({ agent, tool: name, params: clean, key, result, type: toolType(name), duration_ms: Date.now() - t0 });
   log(`${isErr ? "err " : "ok  "} ${name} ${Date.now() - t0}ms agent=${agent} -> receipt ${eff.receipt.number}`);
+  // Mirror to the cloud ledger without blocking the agent's tool call (serve is long-lived).
+  // The promise is tracked in `pending` so a disconnect drains it — the last call still lands.
+  if (link) { const p = cloud.mirrorEffect(link, eff).then((m) => { if (m && m.mirrored) log(`↑ mirrored ${name} -> Invoke`); }).catch(() => {}); if (pending) pending.push(p); }
   ok(id, asMcpResult(result));
 }
 

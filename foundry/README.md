@@ -67,7 +67,7 @@ as Invoke's cloud, on your disk:
 | `foundry serve` | Governed MCP gateway (stdio) — point your coding agent at it |
 | `foundry status` | Project, active target, and Invoke link state |
 | `foundry login [--token K]` | Link this machine to Invoke (opens the web app) |
-| `foundry push` | Graduate the local workspace to a durable cloud one |
+| `foundry push` | Graduate the workspace to a durable cloud one **and stream every execution to the Invoke dashboard, live** |
 
 Built-in execution adapters: `echo` · `time` · **`http.get`/`http.post`/`http.request`** (governed HTTP) ·
 **`file.read`/`file.write`** (governed, sandboxed to the workspace). Each is a governed Execution
@@ -91,6 +91,28 @@ foundry receipts --verify   # prove the ledger
 
 **Everything is an Execution** — tool calls today; model calls, HTTP, memory, and approvals plug in
 as more execution types (same identity / policy / retry / trace / cost / replay for each).
+
+## Deploy to Invoke — and watch it live
+
+`foundry push` graduates your local workspace to a durable, org-owned cloud one **and turns on
+live mirroring**: from then on, every `foundry run` and every tool call through `foundry serve`
+is streamed to the Invoke workspace ledger as it happens — so the dashboard shows your agents
+working in real time.
+
+```bash
+foundry login          # link this machine to Invoke
+foundry push           # graduate + backfill history, then stream live
+#  ✔ Graduated "myapp" → Invoke  workspace ws_…
+#  ↑ streamed 12 of 12 local effect(s) to the cloud ledger
+#  Watch it live:  https://invokehq.run/dashboard/runtime?ws=ws_…
+```
+
+- **Local-first stays fast.** Execution happens on your machine; mirroring is best-effort and never
+  blocks the agent or fails a run. Offline? Everything still works; it's all in your on-disk ledger.
+- **Exactly-once, end to end.** The local `effect_id` is the cloud idempotency key, so a re-`push`
+  (or a blind retry) reconciles to the existing cloud receipt instead of duplicating.
+- **Privacy-preserving.** Foundry mirrors the *hash + metadata* (agent, action, cost, receipt) —
+  never your raw params. The payload stays in your local ledger.
 
 ## Example
 
