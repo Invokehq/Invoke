@@ -123,4 +123,4 @@ is governed the same way.
   (identical request → cache hit → $0). `foundry trace` then shows the whole reasoning
   pipeline — model *and* tool steps — with per-step cost.
 
-Requires Node ≥ 18. Zero dependencies. Prototype — `v0.1.0`.
+Requires Node ≥ 18. Zero dependencies. Prototype.
