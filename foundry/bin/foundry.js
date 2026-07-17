@@ -62,8 +62,8 @@ ${bold("BUILD")}
 ${bold("SERVE (run your coding agent on Foundry)")}
   serve                    Governed MCP gateway over stdio — point Claude Code/Cursor at it;
                             every tool call becomes a receipted Execution
-  mcp [add|config]         Wire Foundry into your coding agent (adds/prints the MCP config)
-                            ${dim("foundry mcp add   ·   claude mcp add foundry -- foundry serve")}
+  mcp [add --client X]     Wire Foundry into any agent — Claude Code, Cursor, Windsurf,
+                            Claude Desktop, Codex, VS Code/Cline (bare lists them all)
   model serve              Governed LLM proxy (OpenAI-compatible) — model calls become
                             Executions: cost, budget, cache. ${dim("OPENAI_BASE_URL=localhost:4000/v1")}
 

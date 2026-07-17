@@ -86,17 +86,28 @@ Foundry governs every side effect an agent produces — not just tools. A **tool
 **LLM call**, an **MCP request**: each is an `Execution` with a `type`, and each gets the
 same treatment — identity, dedup/exactly-once, cost, a signed receipt, and a line in `trace`.
 
-### Wire it into your coding agent
+### Wire it into your coding agent — any of them
+
+Foundry `serve` speaks standard MCP, so **every MCP client works**. `foundry mcp add` wires the
+right config for each:
 
 ```bash
-foundry mcp add                              # Claude Code (or: claude mcp add foundry -- foundry serve)
-foundry workspace connect deepwiki https://mcp.deepwiki.com/mcp
-# now Claude Code's calls to that tool flow through Foundry — governed, receipted:
-foundry trace
+foundry mcp add                          # Claude Code
+foundry mcp add --client cursor          # writes .cursor/mcp.json
+foundry mcp add --client windsurf        # ~/.codeium/windsurf/mcp_config.json
+foundry mcp add --client codex           # prints ~/.codex/config.toml snippet
+foundry mcp                              # lists Claude Desktop, VS Code/Cline, … too
 ```
 
-`foundry mcp` prints the config for Cursor/Windsurf/Claude Desktop too. Verified: Claude Code
-shows `foundry: ✔ Connected`, and a tool call lands in the ledger attributed to `claude-code`.
+Then connect tools and watch the agent's calls flow through Foundry — governed, receipted:
+```bash
+foundry workspace connect deepwiki https://mcp.deepwiki.com/mcp
+foundry trace
+```
+Verified end-to-end: Claude Code shows `foundry: ✔ Connected`, and a tool call lands in the
+ledger attributed to `claude-code`. **Model** calls too — point `OPENAI_BASE_URL` at
+`foundry model serve` and any OpenAI-SDK framework (LangChain, LlamaIndex, Vercel AI SDK, …)
+is governed the same way.
 
 - `foundry serve` puts Foundry **between your coding agent and its tools** (MCP gateway).
 - `foundry model serve` puts Foundry **in front of the model** (OpenAI-compatible proxy):

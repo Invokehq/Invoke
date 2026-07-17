@@ -692,31 +692,80 @@ async function policyCmd(args) {
 }
 
 // ─────────────────────────────── mcp (wire into a coding agent) ───────────────────────────────
+// Merge foundry into an mcpServers-style JSON config (create/update), preserving others.
+function writeMcpServers(file, server) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  let json = {};
+  try { json = JSON.parse(fs.readFileSync(file, "utf8")); } catch { json = {}; }
+  json.mcpServers = json.mcpServers || {};
+  const existed = !!json.mcpServers.foundry;
+  json.mcpServers.foundry = server;
+  fs.writeFileSync(file, JSON.stringify(json, null, 2));
+  return existed;
+}
+
 async function mcpCmd(args) {
-  const sub = args._[0] || "config";
-  const cfg = { mcpServers: { foundry: { command: "foundry", args: ["serve"] } } };
+  const os = require("node:os");
+  const sub = args._[0] || "list";
+  const server = { command: "foundry", args: ["serve"] };
+  const cfg = { mcpServers: { foundry: server } };
+  const printJson = (label) => { console.log(dim(label)); console.log(JSON.stringify(cfg, null, 2)); };
+
   if (sub === "add") {
     const client = (args.client || "claude").toLowerCase();
-    if (client === "claude") {
-      const scope = args.scope ? ["-s", String(args.scope)] : [];
-      const r = require("node:child_process").spawnSync("claude", ["mcp", "add", "foundry", ...scope, "--", "foundry", "serve"], { stdio: "inherit" });
-      if (r.error) {
-        console.log(yellow("claude CLI not found.") + " Add this to your client instead:\n" + JSON.stringify(cfg, null, 2));
-        return 1;
+    switch (client) {
+      case "claude":
+      case "claude-code": {
+        const scope = args.scope ? ["-s", String(args.scope)] : [];
+        const r = require("node:child_process").spawnSync("claude", ["mcp", "add", "foundry", ...scope, "--", "foundry", "serve"], { stdio: "inherit" });
+        if (r.error) { console.log(yellow("claude CLI not found.")); printJson("Add manually:"); return 1; }
+        console.log(green("\n✔ wired into Claude Code.") + dim("  verify: claude mcp list"));
+        return r.status || 0;
       }
-      console.log(green("\n✔ foundry is wired into Claude Code.") + dim("  verify: claude mcp list   ·   then just ask it to use a tool"));
-      return r.status || 0;
+      case "cursor": {
+        const file = path.join(process.cwd(), ".cursor", "mcp.json");
+        const existed = writeMcpServers(file, server);
+        console.log(green(`✔ ${existed ? "updated" : "wrote"} ${file}`) + dim("  — restart Cursor; foundry's tools appear."));
+        return 0;
+      }
+      case "windsurf": {
+        const file = path.join(os.homedir(), ".codeium", "windsurf", "mcp_config.json");
+        const existed = writeMcpServers(file, server);
+        console.log(green(`✔ ${existed ? "updated" : "wrote"} ${file}`) + dim("  — restart Windsurf."));
+        return 0;
+      }
+      case "vscode":
+      case "cline":
+        printJson("Add to your VS Code / Cline MCP settings (mcpServers):");
+        return 0;
+      case "claude-desktop": {
+        const p = process.platform === "darwin" ? "~/Library/Application Support/Claude/claude_desktop_config.json"
+          : process.platform === "win32" ? "%APPDATA%\\Claude\\claude_desktop_config.json"
+          : "~/.config/Claude/claude_desktop_config.json";
+        printJson(`Add to Claude Desktop config (${p}) and restart:`);
+        return 0;
+      }
+      case "codex":
+        console.log(dim("Add to ~/.codex/config.toml:"));
+        console.log('[mcp_servers.foundry]\ncommand = "foundry"\nargs = ["serve"]');
+        return 0;
+      default:
+        printJson(`Config for ${client} (add to its MCP settings):`);
+        return 0;
     }
-    console.log(dim(`Config for ${client} (add to its MCP settings):`));
-    console.log(JSON.stringify(cfg, null, 2));
-    return 0;
   }
-  // config / default
-  console.log(`${b("Wire Foundry into your coding agent")} ${dim("— it governs every tool call.")}\n`);
-  console.log(`${b("Claude Code:")}   claude mcp add foundry -- foundry serve   ${dim("(or: foundry mcp add)")}`);
-  console.log(`${b("Cursor / others:")} add to the client's MCP config:`);
+
+  // list / bare — every supported client
+  console.log(`${b("Wire Foundry into your agent")} ${dim("— it speaks standard MCP, so any client works.")}\n`);
+  console.log(`  ${b("Claude Code")}      foundry mcp add`);
+  console.log(`  ${b("Cursor")}           foundry mcp add --client cursor        ${dim("(writes .cursor/mcp.json)")}`);
+  console.log(`  ${b("Windsurf")}         foundry mcp add --client windsurf`);
+  console.log(`  ${b("Claude Desktop")}   foundry mcp add --client claude-desktop`);
+  console.log(`  ${b("Codex")}            foundry mcp add --client codex`);
+  console.log(`  ${b("VS Code / Cline")}  foundry mcp add --client vscode`);
+  console.log(dim("\nGeneric MCP config (any client):"));
   console.log(JSON.stringify(cfg, null, 2));
-  console.log(dim("\nThen: connect tools (foundry workspace connect …), and watch calls in `foundry trace`."));
+  console.log(dim("\nModel calls too — point OPENAI_BASE_URL at `foundry model serve`: works with any OpenAI-SDK framework."));
   return 0;
 }
 

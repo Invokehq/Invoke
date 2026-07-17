@@ -10,13 +10,25 @@ const { Ledger } = require("../src/ledger");
 
 const BIN = path.join(__dirname, "..", "bin", "foundry.js");
 
-test("`foundry mcp` prints an MCP config that launches `foundry serve`", () => {
+test("`foundry mcp` lists the major clients + a generic config that launches `foundry serve`", () => {
   const r = spawnSync(process.execPath, [BIN, "mcp"], { encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /mcpServers/);
   assert.match(r.stdout, /"foundry"/);
   assert.match(r.stdout, /"serve"/);
-  assert.match(r.stdout, /claude mcp add foundry/);
+  assert.match(r.stdout, /Cursor/);
+  assert.match(r.stdout, /Claude Code/);
+});
+
+test("`foundry mcp add --client cursor` writes .cursor/mcp.json and merges, preserving others", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fdr-cur-"));
+  fs.mkdirSync(path.join(dir, ".cursor"));
+  fs.writeFileSync(path.join(dir, ".cursor", "mcp.json"), JSON.stringify({ mcpServers: { other: { command: "x" } } }));
+  const r = spawnSync(process.execPath, [BIN, "mcp", "add", "--client", "cursor"], { cwd: dir, encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  const cfg = JSON.parse(fs.readFileSync(path.join(dir, ".cursor", "mcp.json"), "utf8"));
+  assert.deepEqual(cfg.mcpServers.foundry, { command: "foundry", args: ["serve"] });
+  assert.ok(cfg.mcpServers.other, "pre-existing server preserved");
 });
 
 test("aggregateTools namespaces connector tools and includes built-ins", () => {
