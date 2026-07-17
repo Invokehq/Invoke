@@ -153,9 +153,28 @@ foundry memory get pricing --agent planner
 Once you `foundry push`, the store is the workspace's: a write learns from the cloud if a
 **remote** agent already had a different value — stale-context detection *across machines*.
 
-> **Search is lexical, not semantic.** `memory.search` matches literal text (substring/keyword).
-> A query like *"how much do they charge"* will **not** find *"Competitor charges $35/seat"*.
-> Real semantic retrieval needs embeddings and is deliberately not built or claimed here.
+### Semantic search — find facts by meaning
+
+`memory.search` is **semantic** when you configure an embeddings provider — a query finds a
+fact even when they share no words. Point it at a local model (free, private) or OpenAI:
+
+```bash
+foundry memory provider http://localhost:11434/v1/embeddings nomic-embed-text   # Ollama, local
+#  or:  export OPENAI_API_KEY=sk-…                                              # OpenAI
+
+foundry memory reindex                       # embed facts written before the provider
+foundry memory search "how expensive is it"
+#  Memory — 3 fact(s) matching "how expensive is it" · semantic (nomic-embed-text)
+#    pricing   Competitor charges $35 per seat   0.71   ← found by meaning, not keywords
+```
+
+Real learned embeddings do the work (there's no honest zero-dependency shortcut), each embed
+is a **governed, costed Execution**, and a fact is re-embedded when its content changes so a
+vector never points at replaced text. Vectors from different models aren't compared.
+
+> **Honest fallback.** With **no provider configured, search is lexical** (substring/keyword) and
+> the output says so — Foundry never dresses a keyword match up as semantic. `"how expensive is it"`
+> matches nothing lexically; that's the gap the provider closes.
 
 ## Deploy to Invoke — and watch it live
 

@@ -10,14 +10,15 @@ const mcp = require("./mcp");
 const policy = require("./policy");
 const cloud = require("./cloud");
 const memory = require("./memory");
+const embeddings = require("./embeddings");
 const red = (s) => `\x1b[31m${s}\x1b[0m`;
 
 // Execute a tool locally: a connector tool ("<connector>.<tool>") proxies to its MCP
 // server; otherwise it's a built-in. The ledger (dedup + receipt) wraps this in run().
-async function executeLocal(dir, tool, params) {
+async function executeLocal(dir, tool, params, project) {
   const conns = store.readConnectors(dir);
   // `memory.*` is a reserved namespace: the Context layer, governed like any Execution.
-  if (tool.startsWith("memory.")) return memory.runMemoryTool(dir, tool, params);
+  if (tool.startsWith("memory.")) return memory.runMemoryTool(dir, tool, params, project || store.readProject(dir));
   const dot = tool.indexOf(".");
   if (dot > 0) {
     const cname = tool.slice(0, dot);
@@ -203,11 +204,11 @@ async function run(args) {
   const t0 = Date.now();
   let result, ok = true;
   try {
-    result = await executeLocal(dir, tool, params);
+    result = await executeLocal(dir, tool, params, project);
   } catch (e) {
     ok = false; result = { error: String(e.message || e) };
   }
-  const effect = led.commit({ agent, tool, params, key, result, type: toolType(tool), duration_ms: Date.now() - t0 });
+  const effect = led.commit({ agent, tool, params, key, result, type: toolType(tool), cost_micros: result && result.cost_micros, duration_ms: Date.now() - t0 });
 
   // If the project is graduated to Invoke, mirror this Execution to the cloud ledger so
   // it shows up live on the dashboard. Best-effort — never fails the local run.
@@ -844,13 +845,39 @@ async function memoryCmd(args) {
   const agent = args.agent || project.agent?.id || "builder";
 
   const commit = (tool, params, result) =>
-    led.commit({ agent, tool, params, key: null, result, type: "memory", duration_ms: 0 });
+    led.commit({ agent, tool, params, key: null, result, type: "memory", cost_micros: result && result.cost_micros, duration_ms: 0 });
+
+  // Configure / show the embeddings provider that turns lexical memory into semantic memory.
+  if (sub === "provider") {
+    const url = args._[1], model = args._[2];
+    if (url) { project.embeddings = { url, model: model || project.embeddings?.model || "text-embedding-3-small" }; store.writeProject(dir, project); }
+    const prov = embeddings.provider(project);
+    if (!prov) {
+      console.log(`${yellow("○ no embeddings provider")} — memory search is ${b("lexical")} (keyword).`);
+      console.log(dim("  turn on semantic search (pick one):"));
+      console.log(`    ${b("local, free:")}   foundry memory provider http://localhost:11434/v1/embeddings nomic-embed-text   ${dim("(Ollama)")}`);
+      console.log(`    ${b("openai:")}        export OPENAI_API_KEY=sk-…   ${dim("(defaults to text-embedding-3-small)")}`);
+      return 0;
+    }
+    console.log(`${green("✔ embeddings provider")}  ${b(prov.model)}  ${dim(prov.url)}${prov.key ? dim("  · key set") : ""}`);
+    console.log(dim(`  memory search is now semantic. backfill existing facts:  foundry memory reindex`));
+    return 0;
+  }
+
+  // Backfill vectors for facts written before a provider was configured (or while offline).
+  if (sub === "reindex") {
+    const r = await memory.reindex(dir, project);
+    if (r.error) { console.log(`${yellow("○")} ${r.error} — see ${b("foundry memory provider")}`); return 1; }
+    if (r.reindexed) commit("memory.reindex", { model: r.model }, r);
+    console.log(`${green("✔ reindexed")} ${b(String(r.reindexed))} fact(s) with ${b(r.model)}  ${dim(fmtCostMicros(r.cost_micros || 0))}`);
+    return 0;
+  }
 
   if (sub === "set") {
     const key = args._[1], content = args._[2] || args.content;
     if (!content) throw new Error(`Usage: foundry memory set <key> "<fact>" [--ttl 3600] [--tags a,b]`);
     const params = { key, content, agent, ttl_seconds: args.ttl ? Number(args.ttl) : undefined, tags: args.tags ? String(args.tags).split(",") : undefined };
-    const r = await memory.runMemoryTool(dir, "memory.set", params);
+    const r = await memory.runMemoryTool(dir, "memory.set", params, project);
     const eff = commit("memory.set", { key, content }, r);
 
     // Graduated? Share the fact with the workspace so other agents/machines see it — and
@@ -872,7 +899,7 @@ async function memoryCmd(args) {
       console.log(`  ${dim("now:")}  ${r.memory.content}`);
       console.log(dim(`  the prior value is kept in revisions — nothing was silently overwritten.`));
     } else {
-      console.log(`${green(r.updated ? "✔ updated" : "✔ remembered")}  ${key ? b(key) : dim("(unkeyed)")}  ${dim("v" + r.memory.version)}`);
+      console.log(`${green(r.updated ? "✔ updated" : "✔ remembered")}  ${key ? b(key) : dim("(unkeyed)")}  ${dim("v" + r.memory.version)}${r.embedded ? dim("  · embedded (semantic)") : ""}`);
     }
     console.log(`  receipt ${b(eff.receipt.number)}  ${dim("memory Execution — receipted like any side effect")}`);
     return 0;
@@ -881,7 +908,7 @@ async function memoryCmd(args) {
   if (sub === "get") {
     const key = args._[1];
     if (!key) throw new Error("Usage: foundry memory get <key>");
-    const r = await memory.runMemoryTool(dir, "memory.get", { key });
+    const r = await memory.runMemoryTool(dir, "memory.get", { key }, project);
     commit("memory.get", { key }, r);
     if (args.json) { console.log(JSON.stringify(r, null, 2)); return 0; }
     if (!r.found) { console.log(dim(`no fact for key ${b(key)}`)); return 1; }
@@ -898,21 +925,26 @@ async function memoryCmd(args) {
 
   if (sub === "search" || sub === "list") {
     const q = sub === "search" ? args._[1] : undefined;
-    const r = await memory.runMemoryTool(dir, "memory.search", { q, tag: args.tag, include_stale: !args["no-stale"] });
+    const r = await memory.runMemoryTool(dir, "memory.search", { q, tag: args.tag, include_stale: !args["no-stale"] }, project);
     if (args.json) { console.log(JSON.stringify(r, null, 2)); return 0; }
-    console.log(`${b("Memory")} ${dim("— " + project.name + " · " + r.count + " fact(s)" + (q ? " matching \"" + q + "\"" : "") + " · lexical search")}\n`);
+    if (r.cost_micros) commit("memory.search", { q }, r); // a semantic search made a real embed call
+    const mode = r.search === "semantic" ? green("semantic") + dim(" (" + r.model + ")") : dim("lexical");
+    console.log(`${b("Memory")} ${dim("— " + project.name + " · " + r.count + " fact(s)" + (q ? " matching \"" + q + "\"" : "") + " · ")}${mode}\n`);
     if (!r.count) { console.log(dim("  nothing yet — foundry memory set <key> \"<fact>\"")); return 0; }
     for (const m of r.memory) {
-      const flags = [m.contested ? yellow("contested") : null, m.stale ? yellow("stale") : null].filter(Boolean).join(" ");
-      console.log(`  ${b((m.key || "(unkeyed)").padEnd(22))} ${dim("v" + String(m.version).padEnd(2))} ${String(m.content).slice(0, 48).padEnd(50)} ${flags}`);
+      const flags = [m.score != null ? dim(m.score.toFixed(2)) : null, m.contested ? yellow("contested") : null, m.stale ? yellow("stale") : null].filter(Boolean).join(" ");
+      console.log(`  ${b((m.key || "(unkeyed)").padEnd(22))} ${dim("v" + String(m.version).padEnd(2))} ${String(m.content).slice(0, 46).padEnd(48)} ${flags}`);
     }
+    if (r.search === "lexical" && q) console.log(dim(`\n  lexical (keyword) search. for semantic: foundry memory provider`));
     return 0;
   }
 
   console.log(`${b("foundry memory")} — the shared Context layer, governed.\n`);
   console.log(`  memory set <key> "<fact>" [--ttl S] [--tags a,b]   one canonical fact per key`);
   console.log(`  memory get <key>                                   warns if stale or contested`);
-  console.log(`  memory search [q] [--tag t] [--no-stale]           lexical (not semantic)`);
+  console.log(`  memory search [q] [--tag t] [--no-stale]           semantic if a provider is set, else lexical`);
+  console.log(`  memory provider [url] [model]                      turn on semantic search (Ollama/OpenAI)`);
+  console.log(`  memory reindex                                     embed facts written before the provider`);
   console.log(dim(`\n  Your agents get the same store as MCP tools through \`foundry serve\`:`));
   console.log(dim(`  memory.set · memory.get · memory.search — every op receipted as a memory Execution.`));
   return 0;

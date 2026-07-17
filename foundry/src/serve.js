@@ -44,7 +44,7 @@ function builtinDefs() {
     // writes upsert one canonical fact; a fact changed under you comes back `contested`.
     { name: "memory.set", description: "Write a shared fact into workspace memory that every agent can read. Use a stable 'key' for a fact that should have ONE canonical value (it upserts instead of duplicating). If another agent had written a different value, the result is flagged contested and keeps the prior value.", inputSchema: obj({ key: { type: "string" }, content: { type: "string" }, tags: { type: "array", items: { type: "string" } }, ttl_seconds: { type: "number", description: "Mark the fact stale after this long." }, confidence: { type: "number" } }, ["content"]) },
     { name: "memory.get", description: "Read a shared fact by key. Warns if the fact is stale (TTL expired) or contested (another agent replaced a different value) — check before acting on it.", inputSchema: obj({ key: { type: "string" } }, ["key"]) },
-    { name: "memory.search", description: "Search shared workspace memory by keyword (lexical substring match, not semantic). Check here before doing research another agent may already have done.", inputSchema: obj({ q: { type: "string" }, tag: { type: "string" }, include_stale: { type: "boolean" } }) },
+    { name: "memory.search", description: "Search shared workspace memory. Semantic (by meaning) when an embeddings provider is configured, otherwise lexical (keyword). Check here before doing research another agent may already have done.", inputSchema: obj({ q: { type: "string" }, tag: { type: "string" }, include_stale: { type: "boolean" } }) },
   ];
 }
 
@@ -65,9 +65,9 @@ function asMcpResult(result) {
   return { content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result) }] };
 }
 
-async function execute(name, params, conns, dir) {
+async function execute(name, params, conns, dir, project) {
   // `memory.*` is a reserved namespace — the shared Context layer, governed like any tool.
-  if (name.startsWith("memory.")) return asMcpResult(await memory.runMemoryTool(dir, name, params));
+  if (name.startsWith("memory.")) return asMcpResult(await memory.runMemoryTool(dir, name, params, project));
   const dot = name.indexOf(".");
   if (dot > 0 && conns[name.slice(0, dot)]) {
     return mcp.call(conns[name.slice(0, dot)], name.slice(dot + 1), params); // upstream MCP result (http or stdio)
@@ -162,7 +162,7 @@ async function handleCall(id, params, ctx) {
   const t0 = Date.now();
   let result, isErr = false;
   try {
-    result = await execute(name, clean, conns, dir);
+    result = await execute(name, clean, conns, dir, project);
   } catch (e) {
     if (e.code === -32601) { log(`404  ${name}`); return fail(id, -32601, e.message); }
     isErr = true;
