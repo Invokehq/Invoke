@@ -18,7 +18,7 @@ async function executeLocal(dir, tool, params) {
   const dot = tool.indexOf(".");
   if (dot > 0) {
     const cname = tool.slice(0, dot);
-    if (conns[cname]) return mcp.call(conns[cname].url, tool.slice(dot + 1), params);
+    if (conns[cname]) return mcp.call(conns[cname], tool.slice(dot + 1), params);
   }
   return runTool(tool, params);
 }
@@ -468,13 +468,46 @@ async function workspace(args) {
   return 0;
 }
 
-// foundry workspace connect <name> <mcp_url> — wire a real MCP tool into the active workspace.
+// Build a connector descriptor from CLI flags. Two transports, because the ecosystem has
+// two shapes: hosted HTTP servers (deepwiki, Vercel — often token-gated) and stdio servers
+// launched via npx (Slack, GitHub, Postgres, …). Secrets are stored as ${VAR} references,
+// never values: `--env SLACK_BOT_TOKEN` records the *name*, resolved from your env at call time.
+function connectorFromArgs(args, url) {
+  const cmd = args.cmd || args.command;
+  if (cmd) {
+    const parts = String(cmd).trim().split(/\s+/);
+    const env = {};
+    for (const e of [].concat(args.env || [])) {
+      if (e === true) continue;
+      const eq = String(e).indexOf("=");
+      if (eq > 0) env[String(e).slice(0, eq)] = String(e).slice(eq + 1);
+      else env[String(e)] = ""; // "" = pass this var through from the environment
+    }
+    return { transport: "stdio", command: parts[0], args: parts.slice(1), env };
+  }
+  const headers = {};
+  for (const h of [].concat(args.header || [])) {
+    if (h === true) continue;
+    const i = String(h).indexOf(":");
+    if (i > 0) headers[String(h).slice(0, i).trim()] = String(h).slice(i + 1).trim();
+  }
+  if (args.token) headers["Authorization"] = `Bearer ${args.token}`;
+  return { transport: "http", url, headers };
+}
+
+// foundry workspace connect <name> <mcp_url|--cmd "..."> — wire a real MCP tool in.
 async function workspaceConnect(args) {
   const dir = requireProject();
   const project = store.readProject(dir);
   const name = args._[1];
   const url = args._[2];
-  if (!name || !url) throw new Error("Usage: foundry workspace connect <name> <mcp_url>");
+  if (!name || (!url && !(args.cmd || args.command))) {
+    throw new Error(
+      "Usage:\n" +
+      "  foundry workspace connect <name> <mcp_url> [--header \"Authorization: Bearer ${TOKEN}\"]\n" +
+      "  foundry workspace connect <name> --cmd \"npx -y <mcp-server-pkg>\" [--env VAR]"
+    );
+  }
   if (activeTarget(project) === "cloud") {
     const cfg = store.readGlobalConfig();
     const { ok, status, json } = await invokeApi(cloudBase(project), `/v1/workspaces/${project.invoke.workspace}/connectors`, cfg.invoke_token, "POST", { name, mcp_url: url });
@@ -484,12 +517,13 @@ async function workspaceConnect(args) {
     console.log(dim(`  run one:  foundry run ${name}.<tool> '<json>'   ·   list:  foundry workspace tools`));
     return 0;
   }
-  // local: handshake the MCP server, import its tool defs into the local sandbox.
-  const { tools } = await mcp.connect(url);
+  // local: handshake the MCP server (http or stdio), import its tool defs into the sandbox.
+  const desc = connectorFromArgs(args, url);
+  const { tools } = await mcp.connect(desc);
   const conns = store.readConnectors(dir);
-  conns[name] = { url, tools, connected_at: new Date().toISOString() };
+  conns[name] = Object.assign({}, desc, { tools, connected_at: new Date().toISOString() });
   store.writeConnectors(dir, conns);
-  console.log(green(`✔ Connected ${b(name)}`) + ` — ${tools.length} tool(s), governed by your local ledger.`);
+  console.log(green(`✔ Connected ${b(name)}`) + ` ${dim("via " + desc.transport)} — ${tools.length} tool(s), governed by your local ledger.`);
   for (const t of tools.slice(0, 6)) console.log(`  ${name}.${t.name}  ${dim((t.description || "").replace(/\s+/g, " ").slice(0, 66))}`);
   if (tools.length > 6) console.log(dim(`  …and ${tools.length - 6} more`));
   console.log(dim(`  run one:  foundry run ${name}.${tools[0] ? tools[0].name : "<tool>"} '<json>'`));

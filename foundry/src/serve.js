@@ -62,7 +62,7 @@ function asMcpResult(result) {
 async function execute(name, params, conns) {
   const dot = name.indexOf(".");
   if (dot > 0 && conns[name.slice(0, dot)]) {
-    return mcp.call(conns[name.slice(0, dot)].url, name.slice(dot + 1), params); // upstream MCP result
+    return mcp.call(conns[name.slice(0, dot)], name.slice(dot + 1), params); // upstream MCP result (http or stdio)
   }
   if (BUILTINS.includes(name)) return asMcpResult(await runTool(name, params));
   const e = new Error(`tool '${name}' is not connected to this workspace`);

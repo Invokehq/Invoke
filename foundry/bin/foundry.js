@@ -8,18 +8,21 @@ const pkg = require("../package.json");
 
 const BOOL_FLAGS = new Set(["json", "force", "verify", "help", "version", "follow", "no-follow", "f"]);
 const ALIAS = { h: "help", V: "version", f: "follow" };
+// Flags that may be given more than once collect into an array (--env A --env B).
+const REPEATABLE = new Set(["env", "header"]);
 
 // Minimal zero-dependency arg parser: --flag, --key value, -h; rest are positionals.
 function parse(argv) {
   const args = { _: [] };
+  const set = (k, v) => { args[k] = REPEATABLE.has(k) ? [].concat(args[k] || [], v) : v; };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith("--")) {
       const [k, inlineV] = a.slice(2).split(/=(.*)/s);
       if (BOOL_FLAGS.has(k)) { args[k] = true; }
-      else if (inlineV !== undefined) { args[k] = inlineV; }
-      else if (i + 1 < argv.length && !argv[i + 1].startsWith("-")) { args[k] = argv[++i]; }
-      else { args[k] = true; }
+      else if (inlineV !== undefined) { set(k, inlineV); }
+      else if (i + 1 < argv.length && !argv[i + 1].startsWith("-")) { set(k, argv[++i]); }
+      else { set(k, true); }
       if (k === "idempotency-key") args.key = args[k];
       if (k === "base-url") args.baseUrl = args[k];
       if (k === "agent-id") args.agent = args[k];
@@ -58,7 +61,10 @@ ${bold("BUILD")}
                            Execution control — gate tools/models (deny > approve > allow)
   workspace                Show the active workspace (target, tools, budget)
     workspace use TARGET     Switch target: local | cloud | ws_id
-    workspace connect N URL  Connect an MCP tool server (governed)
+    workspace connect N URL  Connect a hosted MCP server (governed)
+                              --header "Authorization: Bearer \${TOKEN}"  token-gated (Vercel…)
+    workspace connect N --cmd "npx -y <pkg>" [--env VAR]
+                             Connect a stdio MCP server (Slack, GitHub, Postgres…)
     workspace setup          Guided: connect a tool + set a budget
     workspace tools          List available tools
   status                   Show project, target, and Invoke link

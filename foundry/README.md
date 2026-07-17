@@ -72,9 +72,40 @@ as Invoke's cloud, on your disk:
 Built-in execution adapters: `echo` · `time` · **`http.get`/`http.post`/`http.request`** (governed HTTP) ·
 **`file.read`/`file.write`** (governed, sandboxed to the workspace). Each is a governed Execution
 (type `http`/`file`) — policy-gated, deduped, receipted, and typed in `trace` (⇄ / ▤).
-**Connect real tools** with `foundry workspace connect`
-(e.g. `foundry workspace connect deepwiki https://mcp.deepwiki.com/mcp`) — any MCP server, governed by
-the ledger locally *and* in the cloud. `run`/`receipts` follow the active workspace; no `--cloud` flag.
+## Connect real tools
+
+The MCP ecosystem ships in two shapes, and Foundry speaks both — so the tools you actually use
+(Slack, GitHub, Postgres, Vercel) become governed Executions:
+
+```bash
+# stdio servers — launched via npx. Most of the ecosystem: Slack, GitHub, Postgres, filesystem…
+foundry workspace connect slack  --cmd "npx -y @nrjdalal/slack-mcp-server" --env SLACK_MCP_XOXP_TOKEN
+foundry workspace connect github --cmd "npx -y @modelcontextprotocol/server-github" --env GITHUB_TOKEN
+
+# hosted HTTP servers — some anonymous, some token-gated
+foundry workspace connect deepwiki https://mcp.deepwiki.com/mcp
+foundry workspace connect vercel   https://mcp.vercel.com --header "Authorization: Bearer \${VERCEL_TOKEN}"
+```
+
+Then every call through them is receipted, deduped, policy-gated, and costed like any other Execution:
+
+```bash
+foundry run slack.post_message '{"channel":"#eng","text":"deploy done"}' --key deploy-42
+foundry run slack.post_message '{"channel":"#eng","text":"deploy done"}' --key deploy-42
+#  ⧗ duplicate blocked — reconciled to receipt #… (your agent did NOT double-post)
+```
+
+**Secrets never touch disk.** `--env SLACK_MCP_XOXP_TOKEN` stores the variable's *name*; the value is
+read from your environment when the server launches. `--header "... \${VERCEL_TOKEN}"` stores the
+template and resolves it at call time. `connectors.json` is safe to commit.
+
+A token-gated server you connect without credentials fails with an actionable error, not a hang:
+```
+server requires authorization (401). Connect it with a token:
+    foundry workspace connect <name> https://mcp.vercel.com --header "Authorization: Bearer ${YOUR_TOKEN_ENV}"
+```
+
+`run`/`receipts` follow the active workspace; no `--cloud` flag.
 
 ## Run your coding agent on Foundry
 
