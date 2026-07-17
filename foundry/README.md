@@ -54,6 +54,7 @@ as Invoke's cloud, on your disk:
 | `foundry init [name]` | Create `foundry.json` + a local governed ledger under `.foundry/` |
 | `foundry run [tool] [json]` | Run a tool/agent through the ledger. `--key K` (idempotency), `--agent A`, `--json` |
 | `foundry receipts [--verify]` | List receipts (active workspace), or verify the signed hash-chain |
+| `foundry memory set\|get\|search` | Shared context — one canonical fact per key; warns when a fact is **stale** or **contested** |
 | `foundry policy [allow\|deny\|approve\|rm\|test] <pattern>` | Execution control — gate tools/models (deny > approve > allow) |
 | `foundry trace` | The execution pipeline — every governed step, agent, duration, cost, receipt |
 | `foundry diff <ref1> <ref2>` | Compare two executions — cost, latency, output ("why A vs B") |
@@ -122,6 +123,39 @@ foundry receipts --verify   # prove the ledger
 
 **Everything is an Execution** — tool calls today; model calls, HTTP, memory, and approvals plug in
 as more execution types (same identity / policy / retry / trace / cost / replay for each).
+
+## Shared context — memory that tells you when it's wrong
+
+Agents redo each other's research, and act on facts that changed under them. Foundry's
+Context layer is shared workspace memory where **a keyed fact has one canonical value** —
+and, crucially, it tells a reader when that value is untrustworthy:
+
+```bash
+foundry memory set pricing "Competitor charges \$20/seat" --agent researcher
+foundry memory set pricing "Competitor charges \$35/seat" --agent analyst
+#  ⚠ contested — pricing held a different value (v1, by researcher).
+#    was:  Competitor charges $20/seat
+#    now:  Competitor charges $35/seat
+#    the prior value is kept in revisions — nothing was silently overwritten.
+
+foundry memory get pricing --agent planner
+#  ⚠ contested — a different value was replaced (v2). See revisions.
+#  revisions (1):  v1 · researcher · Competitor charges $20/seat
+```
+
+- **contested** — the last write replaced a *different* value: someone changed this under you.
+  Re-affirming the same value is *not* contested (no false alarms).
+- **stale** — a `--ttl` fact whose time is up: `⚠ stale — re-verify before acting on it.`
+- **revisions** — the last 10 prior values, with who wrote them and when. Nothing is lost.
+- Every op is a receipted `memory` Execution, and your agents get the same store as MCP tools
+  through `foundry serve` (`memory.set` · `memory.get` · `memory.search`).
+
+Once you `foundry push`, the store is the workspace's: a write learns from the cloud if a
+**remote** agent already had a different value — stale-context detection *across machines*.
+
+> **Search is lexical, not semantic.** `memory.search` matches literal text (substring/keyword).
+> A query like *"how much do they charge"* will **not** find *"Competitor charges $35/seat"*.
+> Real semantic retrieval needs embeddings and is deliberately not built or claimed here.
 
 ## Deploy to Invoke — and watch it live
 

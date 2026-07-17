@@ -75,6 +75,8 @@ const BUILTINS = ["echo", "time", "http.get", "http.post", "http.request", "file
 function toolType(name) {
   if (name && name.startsWith("http.")) return "http";
   if (name && name.startsWith("file.")) return "file";
+  if (name && name.startsWith("memory.")) return "memory";
+  if (name === "setup") return "setup";
   return "tool";
 }
 

@@ -9,12 +9,15 @@ const { runTool, BUILTINS, toolType } = require("./tools");
 const mcp = require("./mcp");
 const policy = require("./policy");
 const cloud = require("./cloud");
+const memory = require("./memory");
 const red = (s) => `\x1b[31m${s}\x1b[0m`;
 
 // Execute a tool locally: a connector tool ("<connector>.<tool>") proxies to its MCP
 // server; otherwise it's a built-in. The ledger (dedup + receipt) wraps this in run().
 async function executeLocal(dir, tool, params) {
   const conns = store.readConnectors(dir);
+  // `memory.*` is a reserved namespace: the Context layer, governed like any Execution.
+  if (tool.startsWith("memory.")) return memory.runMemoryTool(dir, tool, params);
   const dot = tool.indexOf(".");
   if (dot > 0) {
     const cname = tool.slice(0, dot);
@@ -830,6 +833,91 @@ async function mcpCmd(args) {
   return 0;
 }
 
+// ─────────────────────────────── memory (the Context layer) ───────────────────────────────
+// foundry memory set|get|search — shared workspace memory, governed like any Execution.
+// Every op goes through the ledger (type `memory`), so context changes are receipted too.
+async function memoryCmd(args) {
+  const dir = requireProject();
+  const project = store.readProject(dir);
+  const led = new Ledger(store.ledgerDir(dir));
+  const sub = args._[0];
+  const agent = args.agent || project.agent?.id || "builder";
+
+  const commit = (tool, params, result) =>
+    led.commit({ agent, tool, params, key: null, result, type: "memory", duration_ms: 0 });
+
+  if (sub === "set") {
+    const key = args._[1], content = args._[2] || args.content;
+    if (!content) throw new Error(`Usage: foundry memory set <key> "<fact>" [--ttl 3600] [--tags a,b]`);
+    const params = { key, content, agent, ttl_seconds: args.ttl ? Number(args.ttl) : undefined, tags: args.tags ? String(args.tags).split(",") : undefined };
+    const r = await memory.runMemoryTool(dir, "memory.set", params);
+    const eff = commit("memory.set", { key, content }, r);
+
+    // Graduated? Share the fact with the workspace so other agents/machines see it — and
+    // learn from the cloud whether a *remote* agent had a different value under this key.
+    const link = cloud.cloudLink(project);
+    const remote = link ? await cloud.mirrorMemory(link, params) : null;
+
+    if (args.json) { console.log(JSON.stringify(Object.assign({}, r, { remote }), null, 2)); return 0; }
+    if (remote && remote.conflict && !r.conflict) {
+      console.log(`${yellow("⚠ contested remotely")} — another agent in ${b(link.wsId)} had a different value for ${b(key)}.`);
+      console.log(`  ${dim("theirs:")}  ${remote.previous}`);
+      console.log(`  ${dim("yours:")}   ${content}`);
+      console.log(dim(`  your local copy was not stale — but the shared fact was. Both are kept in revisions.`));
+    }
+    if (r.conflict) {
+      // The stale-context moment: you just replaced someone else's fact.
+      console.log(`${yellow("⚠ contested")} — ${b(key)} held a different value (v${r.memory.version - 1}, by ${b(r.memory.revisions.slice(-1)[0].by || "?")}).`);
+      console.log(`  ${dim("was:")}  ${r.previous}`);
+      console.log(`  ${dim("now:")}  ${r.memory.content}`);
+      console.log(dim(`  the prior value is kept in revisions — nothing was silently overwritten.`));
+    } else {
+      console.log(`${green(r.updated ? "✔ updated" : "✔ remembered")}  ${key ? b(key) : dim("(unkeyed)")}  ${dim("v" + r.memory.version)}`);
+    }
+    console.log(`  receipt ${b(eff.receipt.number)}  ${dim("memory Execution — receipted like any side effect")}`);
+    return 0;
+  }
+
+  if (sub === "get") {
+    const key = args._[1];
+    if (!key) throw new Error("Usage: foundry memory get <key>");
+    const r = await memory.runMemoryTool(dir, "memory.get", { key });
+    commit("memory.get", { key }, r);
+    if (args.json) { console.log(JSON.stringify(r, null, 2)); return 0; }
+    if (!r.found) { console.log(dim(`no fact for key ${b(key)}`)); return 1; }
+    console.log(`${b(key)}  ${dim("v" + r.version + " · by " + (r.updated_by || "?") + " · " + r.updated_at)}`);
+    console.log(`  ${r.content}`);
+    if (r.stale) console.log(`  ${yellow("⚠ stale")} ${dim("— TTL expired " + r.expires_at + "; re-verify before acting on it.")}`);
+    if (r.contested) console.log(`  ${yellow("⚠ contested")} ${dim("— a different value was replaced (v" + r.version + "). See revisions.")}`);
+    if (r.revisions && r.revisions.length) {
+      console.log(dim(`  revisions (${r.revisions.length}):`));
+      for (const rev of r.revisions.slice(-3)) console.log(dim(`    v${rev.version} · ${rev.by || "?"} · ${String(rev.content).slice(0, 60)}`));
+    }
+    return 0;
+  }
+
+  if (sub === "search" || sub === "list") {
+    const q = sub === "search" ? args._[1] : undefined;
+    const r = await memory.runMemoryTool(dir, "memory.search", { q, tag: args.tag, include_stale: !args["no-stale"] });
+    if (args.json) { console.log(JSON.stringify(r, null, 2)); return 0; }
+    console.log(`${b("Memory")} ${dim("— " + project.name + " · " + r.count + " fact(s)" + (q ? " matching \"" + q + "\"" : "") + " · lexical search")}\n`);
+    if (!r.count) { console.log(dim("  nothing yet — foundry memory set <key> \"<fact>\"")); return 0; }
+    for (const m of r.memory) {
+      const flags = [m.contested ? yellow("contested") : null, m.stale ? yellow("stale") : null].filter(Boolean).join(" ");
+      console.log(`  ${b((m.key || "(unkeyed)").padEnd(22))} ${dim("v" + String(m.version).padEnd(2))} ${String(m.content).slice(0, 48).padEnd(50)} ${flags}`);
+    }
+    return 0;
+  }
+
+  console.log(`${b("foundry memory")} — the shared Context layer, governed.\n`);
+  console.log(`  memory set <key> "<fact>" [--ttl S] [--tags a,b]   one canonical fact per key`);
+  console.log(`  memory get <key>                                   warns if stale or contested`);
+  console.log(`  memory search [q] [--tag t] [--no-stale]           lexical (not semantic)`);
+  console.log(dim(`\n  Your agents get the same store as MCP tools through \`foundry serve\`:`));
+  console.log(dim(`  memory.set · memory.get · memory.search — every op receipted as a memory Execution.`));
+  return 0;
+}
+
 // ─────────────────────────────── connect (the 5-minute live wire-up) ───────────────────────────────
 const CLIENT_LABEL = { claude: "Claude Code", "claude-code": "Claude Code", codex: "Codex", cursor: "Cursor", windsurf: "Windsurf" };
 function clientInstalled(bin) {
@@ -936,7 +1024,7 @@ async function connect(args) {
   return liveTail(dir);
 }
 
-module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd, diff, mcp: mcpCmd, connect };
+module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd, diff, mcp: mcpCmd, connect, memory: memoryCmd };
 
 function parseJson(s) {
   try { const v = JSON.parse(s); if (v && typeof v === "object") return v; throw 0; }

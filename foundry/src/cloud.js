@@ -80,6 +80,34 @@ async function mirrorEffect(link, e) {
   } catch (err) { return { error: String((err && err.message) || err) }; }
 }
 
+// Sync a shared fact to the cloud workspace memory. This is what makes the Context layer
+// real across agents and machines: the cloud store is keyed the same way, so if a *remote*
+// agent already put a different value under this key, the response comes back `conflict`
+// with the previous value — the stale-context signal, from outside this machine.
+async function mirrorMemory(link, m) {
+  if (!link || !m || !m.content) return { skipped: true };
+  const agentId = m.agent || "builder";
+  try {
+    if (!(await ensureAgent(link, agentId))) return { error: "agent register failed" };
+    const r = await request(link, "POST", `/v1/workspaces/${link.wsId}/memory`, {
+      content: m.content,
+      key: m.key || undefined,
+      creator_agent: agentId,
+      tags: m.tags || undefined,
+      ttl_seconds: m.ttl_seconds || undefined,
+      confidence: m.confidence,
+    });
+    let json = null; try { json = JSON.parse(r.body); } catch { /* non-JSON */ }
+    return {
+      status: r.status,
+      synced: r.status === 200 || r.status === 201,
+      conflict: !!(json && json.conflict),
+      previous: json && json.previous,
+      memory: json && json.memory,
+    };
+  } catch (err) { return { error: String((err && err.message) || err) }; }
+}
+
 // Backfill: mirror every committed effect in the local ledger (used by `foundry push`).
 async function mirrorAll(link, effects) {
   let sent = 0, failed = 0;
@@ -91,4 +119,4 @@ async function mirrorAll(link, effects) {
   return { sent, failed };
 }
 
-module.exports = { cloudLink, mirrorEffect, mirrorAll, ensureAgent, DEFAULT_BASE };
+module.exports = { cloudLink, mirrorEffect, mirrorMemory, mirrorAll, ensureAgent, DEFAULT_BASE };
