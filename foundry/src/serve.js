@@ -12,13 +12,25 @@ const { runTool, BUILTINS, toolType } = require("./tools");
 const mcp = require("./mcp");
 const store = require("./store");
 const policy = require("./policy");
+const { runSetup } = require("./setup");
 
 const PROTOCOL = "2025-06-18";
 const VERSION = require("../package.json").version;
 
+// Surfaced to the coding agent on connect (MCP `initialize.instructions`) — this is what
+// makes "integrate Invoke" work: the agent learns it should call `setup` first.
+const INSTRUCTIONS =
+  "This project is governed by Invoke via Foundry. Every tool call routed through these " +
+  "tools is a receipted, exactly-once Execution (identity, cost, tamper-evident ledger). " +
+  "When the user asks to integrate Invoke, set up governance, or govern their agent, call " +
+  "the `setup` tool FIRST — it provisions the governed workspace and returns the exact " +
+  "integration steps, including a model-proxy snippet to add to their code. Verify anytime " +
+  "with the `foundry receipts --verify` CLI.";
+
 function builtinDefs() {
   const obj = (props, req) => ({ type: "object", properties: props || {}, required: req || [] });
   return [
+    { name: "setup", description: "Integrate Invoke governance into this project. Provisions a governed workspace (budget + a starter safety policy) and returns the exact integration steps, including a model-proxy snippet to add to the code. Call this first whenever the user asks to integrate/set up Invoke or govern their agent.", inputSchema: obj({ budget_usd: { type: "number", description: "Spend cap in USD (default 5)." } }) },
     { name: "echo", description: "Echo the params back.", inputSchema: obj() },
     { name: "time", description: "Current time.", inputSchema: obj() },
     { name: "http.get", description: "Governed HTTP GET.", inputSchema: obj({ url: { type: "string" } }, ["url"]) },
@@ -80,13 +92,13 @@ async function serve(dir) {
     const { id, method, params } = msg;
     try {
       if (method === "initialize") {
-        ok(id, { protocolVersion: PROTOCOL, capabilities: { tools: { listChanged: false } }, serverInfo: { name: "foundry", version: VERSION } });
+        ok(id, { protocolVersion: PROTOCOL, capabilities: { tools: { listChanged: false } }, serverInfo: { name: "foundry", version: VERSION }, instructions: INSTRUCTIONS });
       } else if (method === "tools/list") {
         ok(id, { tools });
       } else if (method === "ping") {
         ok(id, {});
       } else if (method === "tools/call") {
-        await handleCall(id, params || {}, { conns, led, ok, fail, log, project });
+        await handleCall(id, params || {}, { conns, led, ok, fail, log, project, dir });
       } else if (method && method.startsWith("notifications/")) {
         // notifications get no response
       } else if (id !== undefined) {
@@ -100,13 +112,23 @@ async function serve(dir) {
 }
 
 async function handleCall(id, params, ctx) {
-  const { conns, led, ok, fail, log, project } = ctx;
+  const { conns, led, ok, fail, log, project, dir } = ctx;
   const name = params.name;
   const args = params.arguments || {};
   const agent = args._agent_id || "coding-agent";
   const key = args._idempotency_key || null;
   const clean = {};
   for (const k of Object.keys(args)) if (!k.startsWith("_")) clean[k] = args[k];
+
+  // The "integrate in 5 min" primitive — provisions governance, returns the steps. Meta,
+  // so it's exempt from the tool policy gate, but still recorded as a governed Execution.
+  if (name === "setup") {
+    const t0 = Date.now();
+    const out = runSetup(dir, project, clean);
+    const eff = led.commit({ agent, tool: "setup", params: clean, key: null, type: "setup", result: { steps: out.steps, budget: out.budget }, duration_ms: Date.now() - t0 });
+    log(`setup governed workspace "${project.name}" -> receipt ${eff.receipt.number}`);
+    return ok(id, { content: [{ type: "text", text: out.text }] });
+  }
 
   // Policy gate — headless, so deny AND approve both block the agent (and are ledgered).
   const decision = policy.evaluate(policy.loadPolicies(project), name);

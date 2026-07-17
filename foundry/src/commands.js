@@ -307,7 +307,7 @@ function execStatus(result) {
   if (result && (result.isError || result.error)) return "error";
   return "ok";
 }
-const TYPE_ICON = { model: "◇", tool: "▸", http: "⇄", file: "▤", memory: "▨", approval: "✋", mcp: "▸" };
+const TYPE_ICON = { model: "◇", tool: "▸", http: "⇄", file: "▤", memory: "▨", approval: "✋", mcp: "▸", setup: "⚙" };
 
 async function trace(args) {
   const dir = requireProject();
@@ -876,7 +876,9 @@ async function connect(args) {
   ok(`Foundry wired into ${label}`, detail);
   await sleep(140);
 
-  console.log(`\n  → Open ${b(label)} in this folder and ask it to use a tool.`);
+  console.log(`\n  ${b("Now open " + label + " here and say:")}`);
+  console.log(`      ${green("› integrate Invoke")}`);
+  console.log(dim(`  ${label} will call Foundry's setup tool and govern this project in ~5 min.`));
   if (activeTarget(project) === "cloud") console.log(`  → Mission Control:  ${b("https://invokehq.run/dashboard")}`);
   if (args["no-follow"] || !tty) { console.log(dim("\n  live view:  foundry trace --follow")); return 0; }
 

@@ -7,11 +7,24 @@ Deploy to [Invoke](https://invokehq.run) when you're ready.
 
 ```bash
 npm install -g @invokehq/foundry
-
-foundry connect claude   # or: codex — detect your agent, wire it in, connect tools,
-                         # then watch its actions stream live. ~5 minutes to your first
-                         # governed agent session.
+foundry connect claude          # or: codex — wire Foundry into your coding agent (once)
 ```
+
+Then open your agent and just say it:
+
+```text
+$ claude
+› integrate Invoke
+
+  ✓ Governed workspace ready — myapp
+  ✓ Tool + model calls route through the Invoke ledger — identity, exactly-once, receipts
+  ✓ Budget set — $5.00 cap
+  ✓ Starter policy — destructive tools require approval
+  → Governed in ~5 min · foundry receipts --verify
+```
+
+Your agent calls Foundry's `setup` tool over MCP and governs the project for you — you never
+leave the editor. `foundry connect` wires it in; **"integrate Invoke" is the 5-minute primitive.**
 
 Or piece by piece:
 ```bash
