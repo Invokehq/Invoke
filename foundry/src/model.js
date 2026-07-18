@@ -9,6 +9,7 @@ const { URL } = require("node:url");
 const store = require("./store");
 const { Ledger } = require("./ledger");
 const policy = require("./policy");
+const cloud = require("./cloud");
 
 // Rough list price, USD per 1M tokens: [input, output]. Matched by substring; default is a
 // conservative fallback so unknown models still get costed (never silently $0).
@@ -48,8 +49,10 @@ function forward(upstream, key, body) {
   });
 }
 
-async function governed(project, led, upstream, key, body) {
-  const agent = (body && body.metadata && body.metadata.agent) || "model";
+async function governed(project, led, upstream, key, body, dir, hdrAgent) {
+  // Attribute the call to an agent: body.metadata.agent, or an x-foundry-agent header
+  // (headers survive SDKs that drop unknown body fields, e.g. LangChain's metadata).
+  const agent = (body && body.metadata && body.metadata.agent) || hdrAgent || "model";
   const model = (body && body.model) || "unknown";
 
   // Policy gate — a model can be denied or gated (e.g. deny "gpt-5" in prod).
@@ -87,6 +90,10 @@ async function governed(project, led, upstream, key, body) {
   }
   const cm = costMicros(model, resp.usage);
   const eff = led.commit({ agent, tool: model, params: body, result: resp, type: "model", duration_ms: dur, cost_micros: cm });
+  // Mirror to the cloud ledger so the model call shows up on the dashboard once graduated.
+  // Re-read the project each call so a `foundry push` takes effect without a proxy restart.
+  const link = cloud.cloudLink(store.readProject(dir));
+  if (link) await cloud.mirrorEffect(link, eff).catch(() => {});
   return { status: 200, json: resp, headers: { "x-foundry-cache": "miss", "x-foundry-cost-usd": (cm / 1e6).toFixed(6), "x-foundry-receipt": eff.receipt.number } };
 }
 
@@ -109,7 +116,7 @@ async function serveModel(dir, opts = {}) {
       req.on("data", (c) => (raw += c));
       req.on("end", async () => {
         let body; try { body = JSON.parse(raw); } catch { return sendJson(res, 400, { error: { message: "invalid JSON body" } }); }
-        try { const out = await governed(project, led, upstream, key, body); sendJson(res, out.status, out.json, out.headers); }
+        try { const out = await governed(project, led, upstream, key, body, dir, req.headers["x-foundry-agent"]); sendJson(res, out.status, out.json, out.headers); }
         catch (e) { sendJson(res, e.status || 500, { error: { message: String((e && e.message) || e) } }); }
       });
     } else {

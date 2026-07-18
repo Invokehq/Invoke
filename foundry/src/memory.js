@@ -24,9 +24,10 @@ const MAX_REVISIONS = 10;
 
 function now() { return Date.now(); }
 function iso(ms) { return new Date(ms).toISOString(); }
+function sleepSync(ms) { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* no SAB */ } }
 
 class Memory {
-  constructor(dir) { this.file = path.join(dir, "memory.json"); }
+  constructor(dir) { this.file = path.join(dir, "memory.json"); this.lock = this.file + ".lock"; }
 
   _load() {
     try { return JSON.parse(fs.readFileSync(this.file, "utf8")); } catch { return { memory: [] }; }
@@ -34,6 +35,17 @@ class Memory {
   _save(d) {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     fs.writeFileSync(this.file, JSON.stringify(d, null, 2));
+  }
+  // Mutex for the read-modify-write in set()/attachEmbedding(): without it, two agents
+  // writing concurrently could lose an update — and contested-detection needs the
+  // read-then-write to be atomic to see the prior value.
+  _withLock(fn) {
+    for (let i = 0; i < 400; i++) {
+      let fd;
+      try { fd = fs.openSync(this.lock, "wx"); } catch (e) { if (e.code !== "EEXIST") throw e; sleepSync(5); continue; }
+      try { return fn(); } finally { fs.closeSync(fd); try { fs.unlinkSync(this.lock); } catch { /* gone */ } }
+    }
+    throw new Error("could not acquire the memory lock");
   }
 
   // Derived on read, exactly like the cloud does it — so a fact never lies about
@@ -57,7 +69,8 @@ class Memory {
   // Write a shared fact. A keyed write UPSERTS the one canonical fact for that key;
   // replacing a different value is a conflict — the prior value is kept in revisions
   // and returned, so a changed fact surfaces instead of silently overwriting.
-  set({ key, content, agent, tags, ttl_seconds, confidence, embedding, embed_model }) {
+  set(params) { return this._withLock(() => this._setLocked(params)); }
+  _setLocked({ key, content, agent, tags, ttl_seconds, confidence, embedding, embed_model }) {
     if (typeof content !== "string" || !content.trim()) throw new Error("memory.set needs 'content'");
     content = content.trim();
     const d = this._load();
@@ -117,12 +130,14 @@ class Memory {
 
   // Attach an embedding to an existing fact by id (used by reindex).
   attachEmbedding(id, embedding, embed_model) {
-    const d = this._load();
-    const m = d.memory.find((x) => x.id === id);
-    if (!m) return false;
-    m.embedding = embedding; m.embed_model = embed_model;
-    this._save(d);
-    return true;
+    return this._withLock(() => {
+      const d = this._load();
+      const m = d.memory.find((x) => x.id === id);
+      if (!m) return false;
+      m.embedding = embedding; m.embed_model = embed_model;
+      this._save(d);
+      return true;
+    });
   }
 
   // Semantic ranking: cosine of the query vector against every fact embedded with the
