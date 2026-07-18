@@ -1200,7 +1200,125 @@ async function connect(args) {
   return liveTail(dir);
 }
 
-module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd, diff, mcp: mcpCmd, connect, memory: memoryCmd, task: taskCmd, handoff: handoffCmd };
+// ─────────────────────────────── setup (govern all your agents) + doctor ───────────────────────────────
+const ALL_CLIENTS = ["claude", "cursor", "codex", "windsurf"];
+const clientBin = (c) => (c === "claude" ? "claude" : c);
+
+// Is Foundry wired into this client's MCP config? (what `doctor` checks)
+function clientWired(c) {
+  const os = require("node:os");
+  try {
+    if (c === "claude") return require("node:child_process").spawnSync("claude", ["mcp", "get", "foundry"], { stdio: "ignore" }).status === 0;
+    if (c === "cursor") { const f = path.join(process.cwd(), ".cursor", "mcp.json"); return fs.existsSync(f) && /"foundry"/.test(fs.readFileSync(f, "utf8")); }
+    if (c === "codex") { const f = path.join(os.homedir(), ".codex", "config.toml"); return fs.existsSync(f) && /\[mcp_servers\.foundry\]/.test(fs.readFileSync(f, "utf8")); }
+    if (c === "windsurf") { const f = path.join(os.homedir(), ".codeium", "windsurf", "mcp_config.json"); return fs.existsSync(f) && /"foundry"/.test(fs.readFileSync(f, "utf8")); }
+  } catch { /* treat as not wired */ }
+  return false;
+}
+
+// foundry setup — govern every coding agent on this machine in one shot: detect them all,
+// wire them in, and turn on the governance features. The onboarding front door.
+async function setupCmd(args) {
+  const yes = !!(args.yes || args.y) || !process.stdout.isTTY;
+  const confirm = async (q) => (yes ? true : !(await ask(`  ${q} [Y/n] `)).toLowerCase().startsWith("n"));
+  console.log(`\n  ${b("● Governing your agents")}\n`);
+
+  // 1. detect + wire every installed client
+  const wired = [];
+  for (const c of ALL_CLIENTS) {
+    if (clientInstalled(clientBin(c))) {
+      const detail = wireClientQuiet(c);
+      wired.push(c);
+      console.log(`  ${green("✓")} ${CLIENT_LABEL[c]} detected  ${dim("· wired (" + detail + ")")}`);
+    } else {
+      console.log(`  ${dim("○ " + CLIENT_LABEL[c] + " not found")}`);
+    }
+  }
+  if (!wired.length) console.log(`  ${yellow("○")} no coding agents detected — install one, or wire manually with ${b("foundry mcp")}.`);
+
+  const { dir } = ensureProject();
+  const project = store.readProject(dir);
+  project.setup = project.setup || {};
+  console.log("");
+
+  // 2. governance toggles
+  if (await confirm("Enable governance?")) {
+    project.policies = project.policies || {};
+    project.policies.approve = [...new Set([...(project.policies.approve || []), "*delete*", "*destroy*", "*.remove", "*drop*"])];
+    project.setup.governance = true;
+    console.log(`  ${green("✓ governance")}     ${dim("policy engine on · destructive tools require approval")}`);
+  }
+  if (await confirm("Enable receipts?")) {
+    project.setup.receipts = true;
+    console.log(`  ${green("✓ receipts")}       ${dim("every execution signed + hash-chained (foundry receipts --verify)")}`);
+  }
+  if (await confirm("Enable shared memory?")) {
+    project.setup.memory = true;
+    const prov = embeddings.provider(project);
+    console.log(`  ${green("✓ shared memory")}  ${dim("memory.* tools live · " + (prov ? "semantic (" + prov.model + ")" : "lexical — foundry memory provider for semantic"))}`);
+  }
+  if (await confirm("Enable model proxy?")) {
+    project.setup.model_proxy = true;
+    console.log(`  ${green("✓ model proxy")}    ${dim("run `foundry model serve` · point OPENAI_BASE_URL at :4000 · calls costed + budgeted")}`);
+  }
+  store.writeProject(dir, project);
+
+  console.log(`\n  ${b("Done.")} Your agents are now governed.`);
+  const cfg = store.readGlobalConfig();
+  if (!cfg.invoke_token) console.log(dim("  → link the cloud + dashboard:  foundry login  then  foundry push"));
+  else if (!(project.invoke && project.invoke.workspace)) console.log(dim("  → stream to the dashboard:  foundry push"));
+  console.log(dim("  → verify everything:  foundry doctor"));
+  return 0;
+}
+
+// foundry doctor — a health check across the whole setup: which agents are wired, and
+// whether governance, memory, policies, receipts, and cloud sync are actually working.
+async function doctorCmd(args) {
+  const dir = store.findProject();
+  const rows = [];
+  const ok = (label, detail) => rows.push([green("✓"), label, detail]);
+  const warn = (label, detail) => rows.push([yellow("○"), label, detail]);
+  const bad = (label, detail) => rows.push([red("✗"), label, detail]);
+
+  for (const c of ALL_CLIENTS) {
+    if (!clientInstalled(clientBin(c))) { warn(CLIENT_LABEL[c], "not installed"); continue; }
+    clientWired(c) ? ok(CLIENT_LABEL[c], "wired") : bad(CLIENT_LABEL[c], "installed but not wired — run foundry setup");
+  }
+
+  if (!dir) {
+    warn("Workspace", "no project here — run foundry setup");
+  } else {
+    const project = store.readProject(dir);
+    const prov = embeddings.provider(project);
+    ok("Memory", prov ? "ready · semantic (" + prov.model + ")" : "ready · lexical (foundry memory provider for semantic)");
+    const p = project.policies || {};
+    const nrules = (p.deny || []).length + (p.approve || []).length + (p.allow || []).length;
+    nrules ? ok("Policies", nrules + " rule(s)") : warn("Policies", "none set — foundry policy add");
+    try {
+      const led = new Ledger(store.ledgerDir(dir));
+      const v = led.verify();
+      v.ok ? ok("Receipts", led.list().length + " receipt(s) · ledger valid") : bad("Receipts", "ledger INVALID — " + (v.reason || ""));
+    } catch { warn("Receipts", "no ledger yet"); }
+    const link = cloud.cloudLink(project);
+    if (link) {
+      let reachable = false;
+      try { const r = await cloud.mirrorEffect(link, { status: "noop" }); reachable = !(r && r.error); } catch { /* offline */ }
+      ok("Cloud Sync", "linked · " + link.wsId + (reachable ? " · reachable" : ""));
+    } else {
+      const cfg = store.readGlobalConfig();
+      warn("Cloud Sync", cfg.invoke_token ? "logged in · not pushed (foundry push)" : "local-only (foundry login + push)");
+    }
+  }
+
+  if (args.json) { console.log(JSON.stringify(rows.map(([s, l, d]) => ({ check: l, ok: s === green("✓"), detail: d })), null, 2)); return 0; }
+  console.log(`\n  ${b("foundry doctor")}\n`);
+  for (const [sym, label, detail] of rows) console.log(`  ${sym} ${String(label).padEnd(14)} ${dim(detail)}`);
+  const anyBad = rows.some((r) => r[0] === red("✗"));
+  console.log(anyBad ? `\n  ${yellow("Some checks need attention")} ${dim("— see above.")}` : `\n  ${green("All good.")} ${dim("Your agents are governed.")}`);
+  return anyBad ? 1 : 0;
+}
+
+module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd, diff, mcp: mcpCmd, connect, memory: memoryCmd, task: taskCmd, handoff: handoffCmd, setup: setupCmd, doctor: doctorCmd };
 
 function parseJson(s) {
   try { const v = JSON.parse(s); if (v && typeof v === "object") return v; throw 0; }

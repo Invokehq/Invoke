@@ -6,8 +6,8 @@ try { require("node:dns").setDefaultResultOrder("ipv4first"); } catch { /* older
 const commands = require("../src/commands");
 const pkg = require("../package.json");
 
-const BOOL_FLAGS = new Set(["json", "force", "verify", "help", "version", "follow", "no-follow", "f"]);
-const ALIAS = { h: "help", V: "version", f: "follow" };
+const BOOL_FLAGS = new Set(["json", "force", "verify", "help", "version", "follow", "no-follow", "f", "yes", "y"]);
+const ALIAS = { h: "help", V: "version", f: "follow", y: "yes" };
 // Flags that may be given more than once collect into an array (--env A --env B).
 const REPEATABLE = new Set(["env", "header"]);
 
@@ -46,8 +46,11 @@ ${bold("USAGE")}
   foundry <command> [options]
 
 ${bold("START HERE")}
-  connect [claude|codex]  Detect your agent, wire it in, connect tools, and stream its
-                            actions live. Experience Foundry in ~5 minutes.
+  setup                   Govern EVERY coding agent on this machine: detect them all,
+                            wire them in, turn on governance/receipts/memory/model proxy
+  doctor                  Health check — which agents are wired, and whether governance,
+                            memory, policies, receipts, and cloud sync are working
+  connect [claude|codex]  Detect ONE agent, wire it in, connect tools, stream its actions live
 
 ${bold("BUILD")}
   init [name]              Forge a local governed workspace (on-disk ledger)
@@ -104,6 +107,7 @@ async function main() {
     model: commands.model, policy: commands.policy, diff: commands.diff, mcp: commands.mcp,
     connect: commands.connect, memory: commands.memory,
     task: commands.task, handoff: commands.handoff,
+    setup: commands.setup, doctor: commands.doctor,
   };
   const fn = table[cmd];
   if (!fn) {
