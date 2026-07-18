@@ -12,6 +12,7 @@ const cloud = require("./cloud");
 const memory = require("./memory");
 const embeddings = require("./embeddings");
 const coord = require("./coord");
+const { Approvals } = require("./approvals");
 const red = (s) => `\x1b[31m${s}\x1b[0m`;
 
 // Execute a tool locally: a connector tool ("<connector>.<tool>") proxies to its MCP
@@ -1200,6 +1201,67 @@ async function connect(args) {
   return liveTail(dir);
 }
 
+// ─────────────────────────────── approvals (human-in-the-loop) ───────────────────────────────
+// When a policy marks a tool `approve`, the gateway queues it here instead of running it.
+// A person approves → the effect runs once + is receipted → the agent gets it exactly-once.
+async function approvalsCmd(args) {
+  const dir = requireProject();
+  const project = store.readProject(dir);
+  const led = new Ledger(store.ledgerDir(dir));
+  const ap = new Approvals(store.ledgerDir(dir));
+  const link = cloud.cloudLink(project);
+  const sub = args._[0] || "list";
+
+  if (sub === "list" || sub === "ls") {
+    const pend = ap.list("pending");
+    if (args.json) { console.log(JSON.stringify({ pending: pend }, null, 2)); return 0; }
+    console.log(`${b("Approvals")} ${dim("— " + pend.length + " pending")}\n`);
+    if (!pend.length) { console.log(dim("  nothing waiting on you.")); return 0; }
+    for (const a of pend) console.log(`  ${b(a.id)}  ${dim((a.agent || "agent").slice(0, 12).padEnd(12))} ${b(a.tool)}  ${dim("rule " + (a.rule || "?"))}`);
+    console.log(dim("\n  approve:  foundry approvals approve <id>   ·   deny:  foundry approvals deny <id>"));
+    return 0;
+  }
+
+  if (sub === "approve" || sub === "deny") {
+    const id = args._[1];
+    if (!id) throw new Error(`Usage: foundry approvals ${sub} <id>`);
+    const a = ap.get(id);
+    if (!a) throw new Error(`approval '${id}' not found`);
+    if (a.status !== "pending") { console.log(dim(`${a.id} is already ${a.status}.`)); return 0; }
+
+    if (sub === "deny") {
+      ap.resolve(a.id, "deny", args.by || "human");
+      const eff = led.commit({ agent: a.agent, tool: a.tool, params: a.params, key: a.key, type: toolType(a.tool), status: "denied", result: { denied: true, by: "human", rule: a.rule }, duration_ms: 0 });
+      if (link) await cloud.mirrorEffect(link, eff).catch(() => {});
+      console.log(`${red("✗ denied")} ${b(a.tool)} ${dim("— " + a.id + " · a signed refusal is in the ledger " + eff.receipt.number)}`);
+      return 0;
+    }
+
+    // approve → run the deferred side effect once + commit, so the agent's next identical
+    // call reconciles to this receipt (exactly-once — never executed twice).
+    ap.resolve(a.id, "approve", args.by || "human");
+    const dup = led.committed(a.effect_key);
+    if (dup) { console.log(`${green("✓ approved")} ${b(a.tool)} ${dim("— already executed, receipt " + dup.receipt.number)}`); return 0; }
+    const t0 = Date.now();
+    let result, okr = true;
+    try { result = await executeLocal(dir, a.tool, a.params, project); }
+    catch (e) { okr = false; result = { error: String(e.message || e) }; }
+    const eff = led.commit({ agent: a.agent, tool: a.tool, params: a.params, key: a.key, result, type: toolType(a.tool), duration_ms: Date.now() - t0 });
+    if (link) await cloud.mirrorEffect(link, eff).catch(() => {});
+    console.log(`${green("✓ approved & executed")} ${b(a.tool)} ${dim(a.id + " · receipt " + eff.receipt.number)}`);
+    console.log("  result: " + JSON.stringify(result).slice(0, 200));
+    console.log(dim("  the agent gets this exact result on its next identical call."));
+    return okr ? 0 : 1;
+  }
+
+  console.log(`${b("foundry approvals")} — human-in-the-loop.\n`);
+  console.log("  approvals list              what's waiting on you");
+  console.log("  approvals approve <id>      run the effect + record a signed receipt");
+  console.log("  approvals deny <id>         refuse it (a signed refusal is logged)");
+  console.log(dim("\n  Gate a tool with:  foundry policy approve \"<pattern>\"   ·   agents hit it through foundry serve."));
+  return 0;
+}
+
 // ─────────────────────────────── setup (govern all your agents) + doctor ───────────────────────────────
 const ALL_CLIENTS = ["claude", "cursor", "codex", "windsurf"];
 const clientBin = (c) => (c === "claude" ? "claude" : c);
@@ -1318,7 +1380,7 @@ async function doctorCmd(args) {
   return anyBad ? 1 : 0;
 }
 
-module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd, diff, mcp: mcpCmd, connect, memory: memoryCmd, task: taskCmd, handoff: handoffCmd, setup: setupCmd, doctor: doctorCmd };
+module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd, diff, mcp: mcpCmd, connect, memory: memoryCmd, task: taskCmd, handoff: handoffCmd, setup: setupCmd, doctor: doctorCmd, approvals: approvalsCmd };
 
 function parseJson(s) {
   try { const v = JSON.parse(s); if (v && typeof v === "object") return v; throw 0; }

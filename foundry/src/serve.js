@@ -15,6 +15,7 @@ const policy = require("./policy");
 const cloud = require("./cloud");
 const memory = require("./memory");
 const { Coord } = require("./coord");
+const { Approvals } = require("./approvals");
 const { runSetup } = require("./setup");
 
 const PROTOCOL = "2025-06-18";
@@ -169,13 +170,22 @@ async function handleCall(id, params, ctx) {
     return ok(id, { content: [{ type: "text", text: out.text }] });
   }
 
-  // Policy gate — headless, so deny AND approve both block the agent (and are ledgered).
+  // Policy gate. `deny` → a signed refusal. `approve` → human-in-the-loop: if it was
+  // already approved and executed, return that result (exactly-once); otherwise queue a
+  // pending approval and tell the agent to try again once a person signs off.
   const decision = policy.evaluate(policy.loadPolicies(project), name);
-  if (decision.effect !== "allow") {
-    const status = decision.effect === "deny" ? "denied" : "blocked";
-    const eff = led.commit({ agent, tool: name, params: clean, key, type: toolType(name), status, result: { [status]: true, rule: decision.rule }, duration_ms: 0 });
-    log(`${status} ${name} by policy ${decision.rule} -> receipt ${eff.receipt.number}`);
-    return ok(id, { content: [{ type: "text", text: `Foundry ${status} '${name}' — policy rule '${decision.rule}'${decision.effect === "approve" ? " requires human approval" : ""}.` }], isError: true });
+  if (decision.effect === "deny") {
+    const eff = led.commit({ agent, tool: name, params: clean, key, type: toolType(name), status: "denied", result: { denied: true, rule: decision.rule }, duration_ms: 0 });
+    log(`denied ${name} by policy ${decision.rule} -> receipt ${eff.receipt.number}`);
+    return ok(id, { content: [{ type: "text", text: `Foundry denied '${name}' — policy rule '${decision.rule}'.` }], isError: true });
+  }
+  if (decision.effect === "approve") {
+    const effKey = led.effectKey(agent, name, clean, key);
+    const done = led.committed(effKey);
+    if (done) { log(`approved+done ${name} -> receipt ${done.receipt.number}`); return ok(id, asMcpResult(done.result)); }
+    const { approval, existing } = new Approvals(store.ledgerDir(dir)).request({ agent, tool: name, params: clean, key, effect_key: effKey, rule: decision.rule });
+    log(`approval ${existing ? "pending" : "queued"} ${name} -> ${approval.id}`);
+    return ok(id, { content: [{ type: "text", text: `⏸ Foundry queued '${name}' for human approval (${approval.id}, rule '${decision.rule}'). A person must approve it — then call '${name}' again to get the result.` }], isError: true });
   }
 
   // Exactly-once for keyed calls: a repeat reconciles to the receipt, no re-execution.

@@ -67,6 +67,8 @@ ${bold("BUILD")}
   diff REF1 REF2           Compare two executions — cost, latency, output (why A vs B)
   policy [allow|deny|approve|rm|test] PATTERN
                            Execution control — gate tools/models (deny > approve > allow)
+  approvals [list|approve|deny <id>]
+                           Human-in-the-loop — review + release approve-gated calls
   workspace                Show the active workspace (target, tools, budget)
     workspace use TARGET     Switch target: local | cloud | ws_id
     workspace connect N URL  Connect a hosted MCP server (governed)
@@ -107,7 +109,7 @@ async function main() {
     model: commands.model, policy: commands.policy, diff: commands.diff, mcp: commands.mcp,
     connect: commands.connect, memory: commands.memory,
     task: commands.task, handoff: commands.handoff,
-    setup: commands.setup, doctor: commands.doctor,
+    setup: commands.setup, doctor: commands.doctor, approvals: commands.approvals,
   };
   const fn = table[cmd];
   if (!fn) {
