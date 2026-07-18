@@ -57,6 +57,9 @@ ${bold("BUILD")}
   receipts [--verify]      List receipts (active workspace), or verify the chain
   memory set|get|search    Shared context every agent reads/writes — one canonical fact
                             per key; warns when a fact is stale or contested
+  task add|ls|claim|done   Multi-agent coordination — ATOMIC claim (exactly one owner),
+    task dep|dag|release     dependency DAG gating.  claim <id> --agent A
+  handoff <to> "ctx"       Pass a task to another agent; handoff inbox|accept|reject
   trace                    The execution pipeline: every governed step, cost, and receipt
   diff REF1 REF2           Compare two executions — cost, latency, output (why A vs B)
   policy [allow|deny|approve|rm|test] PATTERN
@@ -100,6 +103,7 @@ async function main() {
     workspace: commands.workspace, serve: commands.serve, trace: commands.trace,
     model: commands.model, policy: commands.policy, diff: commands.diff, mcp: commands.mcp,
     connect: commands.connect, memory: commands.memory,
+    task: commands.task, handoff: commands.handoff,
   };
   const fn = table[cmd];
   if (!fn) {

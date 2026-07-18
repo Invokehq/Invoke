@@ -11,6 +11,7 @@ const policy = require("./policy");
 const cloud = require("./cloud");
 const memory = require("./memory");
 const embeddings = require("./embeddings");
+const coord = require("./coord");
 const red = (s) => `\x1b[31m${s}\x1b[0m`;
 
 // Execute a tool locally: a connector tool ("<connector>.<tool>") proxies to its MCP
@@ -319,7 +320,7 @@ function execStatus(result) {
   if (result && (result.isError || result.error)) return "error";
   return "ok";
 }
-const TYPE_ICON = { model: "◇", tool: "▸", http: "⇄", file: "▤", memory: "▨", approval: "✋", mcp: "▸", setup: "⚙" };
+const TYPE_ICON = { model: "◇", tool: "▸", http: "⇄", file: "▤", memory: "▨", approval: "✋", mcp: "▸", setup: "⚙", coord: "⑃" };
 
 async function trace(args) {
   const dir = requireProject();
@@ -950,6 +951,133 @@ async function memoryCmd(args) {
   return 0;
 }
 
+// ─────────────────────────────── coordination (tasks + handoffs) ───────────────────────────────
+// `foundry task` / `foundry handoff` — multiple agents, no collisions. Local board is
+// authoritative when local; once graduated, claims route to the cloud workspace (race-safe
+// across machines). Every op is a receipted `coord` Execution.
+async function taskCmd(args) {
+  const dir = requireProject();
+  const project = store.readProject(dir);
+  const led = new Ledger(store.ledgerDir(dir));
+  const link = cloud.cloudLink(project);
+  const c = new coord.Coord(store.ledgerDir(dir));
+  const sub = args._[0] || "ls";
+  const agent = args.agent || project.agent?.id || "builder";
+  const where = link ? dim("cloud " + link.wsId) : dim("local");
+  const rec = (tool, params, result) => led.commit({ agent, tool, params, key: null, result, type: "coord", duration_ms: 0 });
+  const fmtTask = (t) => {
+    const owner = t.claimed_by ? green("● " + t.claimed_by) : (t.blockers && t.blockers.length ? yellow("◌ blocked") : dim("○ open"));
+    const deps = (t.depends_on && t.depends_on.length) ? dim(" needs:" + t.depends_on.length) : "";
+    const cap = t.required_capability ? dim(" [" + t.required_capability + "]") : "";
+    console.log(`  ${b((t.id || "").slice(0, 13).padEnd(13))} ${String(t.title).slice(0, 40).padEnd(42)} ${owner}${cap}${deps}`);
+  };
+
+  if (sub === "add") {
+    const title = args._[1]; if (!title) throw new Error(`Usage: foundry task add "<title>" [--capability X] [--needs id,id] [--agent A]`);
+    const depends_on = args.needs ? String(args.needs).split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+    const t = link ? await cloud.cloudCoord.addTask(link, { title, required_capability: args.capability, depends_on, agent })
+                   : c.addTask({ title, required_capability: args.capability, depends_on, agent });
+    rec("task.add", { title }, t);
+    console.log(`${green("✔ task")} ${b(t.id)} ${dim("— " + where)}`);
+    if (args.capability) console.log(dim(`  requires capability: ${args.capability}`));
+    if (depends_on && depends_on.length) console.log(dim(`  depends on: ${depends_on.join(", ")}`));
+    return 0;
+  }
+
+  if (sub === "claim") {
+    const id = args._[1]; if (!id) throw new Error("Usage: foundry task claim <task_id> --agent A");
+    const r = link ? await cloud.cloudCoord.claim(link, id, agent) : c.claim(id, agent);
+    rec("task.claim", { task: id }, r);
+    if (r.claimed) { console.log(`${green("✔ claimed")} ${b(id)} ${dim("by " + agent + (r.already_owner ? " (already yours)" : "") + " · " + where)}`); return 0; }
+    if (r.blocked) { console.log(`${yellow("◌ blocked")} — ${b(id)} has unfinished dependencies:`); (r.blockers || []).forEach((x) => console.log(`    ${dim("·")} ${x.title} ${dim("(" + x.status + ")")}`)); return 1; }
+    if (r.conflict) { console.log(`${red("✗ already claimed")} by ${b(r.owner)} ${dim("— exactly-one-owner: your agent did NOT double-book the work" + (r.capability ? " (or lacks the capability)" : ""))}`); return 1; }
+    console.log(`${red("✗")} ${r.error || "claim failed"}`); return 1;
+  }
+
+  if (sub === "release") {
+    const id = args._[1]; if (!id) throw new Error("Usage: foundry task release <task_id> --agent A");
+    const r = link ? await cloud.cloudCoord.release(link, id, agent) : c.release(id, agent);
+    rec("task.release", { task: id }, r);
+    console.log(r.released ? `${green("✔ released")} ${b(id)} ${dim("— open for the next agent")}` : `${yellow("○")} not released ${dim(r.owner || "(you don't own it)")}`);
+    return r.released ? 0 : 1;
+  }
+
+  if (sub === "done" || sub === "complete") {
+    const id = args._[1]; const output = args._[2] || args.output;
+    if (!id) throw new Error("Usage: foundry task done <task_id> [output] --agent A");
+    const r = link ? await cloud.cloudCoord.complete(link, id, agent, output) : c.complete(id, agent, output);
+    rec("task.done", { task: id }, r);
+    console.log(`${green("✔ done")} ${b(id)} ${dim("— dependents can now be claimed · " + where)}`);
+    return 0;
+  }
+
+  if (sub === "dep" || sub === "needs") {
+    const id = args._[1], depId = args._[2];
+    if (!id || !depId) throw new Error("Usage: foundry task dep <task_id> <depends_on_id>");
+    if (link) { const r = await cloud.cloudCoord.addDep(link, id, depId); if (r.status >= 400) throw new Error((r.json && r.json.detail) || `cloud ${r.status}`); }
+    else c.addDep(id, depId);
+    rec("task.dep", { task: id, dep: depId }, { ok: true });
+    console.log(`${green("✔")} ${b(id)} now depends on ${b(depId)} ${dim("— can't be claimed until that's done")}`);
+    return 0;
+  }
+
+  if (sub === "dag") {
+    const dag = link ? { order: await cloud.cloudCoord.list(link), has_cycle: false } : c.dag();
+    console.log(`${b("Task DAG")} ${dim("— " + where + (dag.has_cycle ? " · " + red("cycle detected") : ""))}\n`);
+    if (!dag.order.length) { console.log(dim("  no tasks — foundry task add \"<title>\"")); return 0; }
+    for (const t of dag.order) fmtTask(t);
+    return 0;
+  }
+
+  // default: list the board
+  const tasks = link ? await cloud.cloudCoord.list(link) : c.list();
+  console.log(`${b("Tasks")} ${dim("— " + project.name + " · " + tasks.length + " · " + where)}\n`);
+  if (!tasks.length) { console.log(dim("  no tasks yet — foundry task add \"<title>\"  ·  claim one:  foundry task claim <id> --agent A")); return 0; }
+  for (const t of tasks) fmtTask(t);
+  return 0;
+}
+
+async function handoffCmd(args) {
+  const dir = requireProject();
+  const project = store.readProject(dir);
+  const led = new Ledger(store.ledgerDir(dir));
+  const link = cloud.cloudLink(project);
+  const c = new coord.Coord(store.ledgerDir(dir));
+  const sub = args._[0];
+  const agent = args.agent || project.agent?.id || "builder";
+  const rec = (tool, params, result) => led.commit({ agent, tool, params, key: null, result, type: "coord", duration_ms: 0 });
+
+  if (sub === "inbox") {
+    const items = link ? await cloud.cloudCoord.inbox(link, agent, "pending") : c.inbox(agent, "pending");
+    console.log(`${b("Handoffs")} ${dim("— inbox for " + agent + " · " + items.length + " pending")}\n`);
+    if (!items.length) { console.log(dim("  empty")); return 0; }
+    for (const h of items) console.log(`  ${b((h.id || "").slice(0, 12))} ${dim("from " + (h.from_agent || "?"))}  ${String(h.context || "").slice(0, 44)}  ${h.task_id ? dim("→ " + h.task_id) : ""}`);
+    console.log(dim(`\n  accept:  foundry handoff accept <id> --agent ${agent}`));
+    return 0;
+  }
+  if (sub === "accept" || sub === "reject") {
+    const id = args._[1]; if (!id) throw new Error(`Usage: foundry handoff ${sub} <handoff_id> --agent A`);
+    const r = link ? await cloud.cloudCoord.resolveHandoff(link, id, sub === "accept", agent) : c.resolveHandoff(id, sub === "accept", agent);
+    rec("handoff." + sub, { handoff: id }, r);
+    if (sub === "accept") console.log(`${green("✔ accepted")} ${b(id)} ${dim("— " + (r && r.task ? "task " + (r.task.id || r.task.task_id || "") + " is now yours" : "handoff taken"))}`);
+    else console.log(`${yellow("✗ rejected")} ${b(id)} ${dim("— back to the sender")}`);
+    return 0;
+  }
+  // default: create a handoff.  foundry handoff <to> "<context>" [--task id] [--from A]
+  const to = sub, context = args._[1] || args.context || "";
+  if (!to) { console.log(`${b("foundry handoff")} — pass work to another agent.\n`);
+    console.log(`  handoff <to> "<context>" [--task id]   offer a task to another agent`);
+    console.log(`  handoff inbox --agent A                 an agent's pending handoffs`);
+    console.log(`  handoff accept|reject <id> --agent A    take it (claims the task) or decline`);
+    return 0; }
+  const h = link ? await cloud.cloudCoord.handoff(link, { from: agent, to, task_id: args.task, context })
+                 : c.handoff({ from: agent, to, task_id: args.task, context });
+  rec("handoff.create", { to, task: args.task }, h);
+  console.log(`${green("✔ handoff")} ${b((h && h.id) || "")} ${dim("— " + agent + " → " + to + (args.task ? " · task " + args.task : ""))}`);
+  console.log(dim(`  ${to} sees it:  foundry handoff inbox --agent ${to}`));
+  return 0;
+}
+
 // ─────────────────────────────── connect (the 5-minute live wire-up) ───────────────────────────────
 const CLIENT_LABEL = { claude: "Claude Code", "claude-code": "Claude Code", codex: "Codex", cursor: "Cursor", windsurf: "Windsurf" };
 function clientInstalled(bin) {
@@ -1056,7 +1184,7 @@ async function connect(args) {
   return liveTail(dir);
 }
 
-module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd, diff, mcp: mcpCmd, connect, memory: memoryCmd };
+module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd, diff, mcp: mcpCmd, connect, memory: memoryCmd, task: taskCmd, handoff: handoffCmd };
 
 function parseJson(s) {
   try { const v = JSON.parse(s); if (v && typeof v === "object") return v; throw 0; }

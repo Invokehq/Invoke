@@ -76,6 +76,7 @@ function toolType(name) {
   if (name && name.startsWith("http.")) return "http";
   if (name && name.startsWith("file.")) return "file";
   if (name && name.startsWith("memory.")) return "memory";
+  if (name && (name.startsWith("task.") || name.startsWith("handoff."))) return "coord";
   if (name === "setup") return "setup";
   return "tool";
 }

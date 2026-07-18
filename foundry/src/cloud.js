@@ -108,6 +108,40 @@ async function mirrorMemory(link, m) {
   } catch (err) { return { error: String((err && err.message) || err) }; }
 }
 
+// ── Coordination: when graduated, task/handoff ops route to the cloud workspace, which is
+// the authoritative, race-safe substrate across machines. A local board can't arbitrate a
+// claim between agents on two different laptops — the shared workspace can.
+async function _coord(link, method, path, body) {
+  if (!(await ensureAgent(link, (body && body.agent_id) || (body && body.assigned_agent) || "builder"))) { /* best-effort */ }
+  const r = await request(link, method, `/v1/workspaces/${link.wsId}${path}`, body);
+  let json = null; try { json = JSON.parse(r.body); } catch { /* non-JSON */ }
+  return { status: r.status, json };
+}
+
+const cloudCoord = {
+  async addTask(link, { title, required_capability, depends_on, agent }) {
+    await ensureAgent(link, agent || "builder");
+    const r = await _coord(link, "POST", "/tasks", { title, required_capability: required_capability || undefined, depends_on: depends_on || undefined, assigned_agent: agent || undefined });
+    return r.json && r.json.task;
+  },
+  async list(link) { const r = await _coord(link, "GET", "/tasks"); return (r.json && r.json.tasks) || []; },
+  // Returns {claimed} | {conflict, owner} | {blocked, blockers}, normalized to match the local board.
+  async claim(link, taskId, agent) {
+    await ensureAgent(link, agent);
+    const r = await _coord(link, "POST", `/tasks/${taskId}/claim`, { agent_id: agent });
+    if (r.status === 200 && r.json) return { claimed: !!r.json.claimed, already_owner: !!r.json.already_owner, task: r.json.task };
+    if (r.status === 409 && r.json && r.json.decision === "denied_blocked") return { claimed: false, blocked: true, blockers: r.json.blockers };
+    if (r.status === 409) { const m = /Already claimed by (.+)$/.exec((r.json && r.json.detail) || ""); return { claimed: false, conflict: true, owner: m ? m[1] : "another agent", capability: /lacks required capability/.test((r.json && r.json.detail) || "") }; }
+    return { claimed: false, error: (r.json && r.json.detail) || `cloud ${r.status}` };
+  },
+  async release(link, taskId, agent) { const r = await _coord(link, "POST", `/tasks/${taskId}/release`, { agent_id: agent }); return { released: !!(r.json && r.json.released), task: r.json && r.json.task, owner: r.json && r.json.detail }; },
+  async complete(link, taskId, agent, output) { const r = await _coord(link, "PATCH", `/tasks/${taskId}`, { status: "done", output }); return { completed: r.status === 200, task: r.json && r.json.task }; },
+  async addDep(link, taskId, depId) { const r = await _coord(link, "POST", `/tasks/${taskId}/dependencies`, { depends_on: depId }); return { status: r.status, json: r.json }; },
+  async handoff(link, { from, to, task_id, context }) { const r = await _coord(link, "POST", "/handoffs", { from_agent: from, to_agent: to, task_id, context }); return r.json && (r.json.handoff || r.json); },
+  async inbox(link, agent, status) { const r = await _coord(link, "GET", `/handoffs?to_agent=${encodeURIComponent(agent)}${status ? "&status=" + status : ""}`); return (r.json && r.json.handoffs) || []; },
+  async resolveHandoff(link, id, accept, by) { const r = await _coord(link, "POST", `/handoffs/${id}/${accept ? "accept" : "reject"}`, { by }); return r.json; },
+};
+
 // Backfill: mirror every committed effect in the local ledger (used by `foundry push`).
 async function mirrorAll(link, effects) {
   let sent = 0, failed = 0;
@@ -119,4 +153,4 @@ async function mirrorAll(link, effects) {
   return { sent, failed };
 }
 
-module.exports = { cloudLink, mirrorEffect, mirrorMemory, mirrorAll, ensureAgent, DEFAULT_BASE };
+module.exports = { cloudLink, mirrorEffect, mirrorMemory, mirrorAll, ensureAgent, cloudCoord, DEFAULT_BASE };

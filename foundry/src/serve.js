@@ -14,6 +14,7 @@ const store = require("./store");
 const policy = require("./policy");
 const cloud = require("./cloud");
 const memory = require("./memory");
+const { Coord } = require("./coord");
 const { runSetup } = require("./setup");
 
 const PROTOCOL = "2025-06-18";
@@ -45,6 +46,12 @@ function builtinDefs() {
     { name: "memory.set", description: "Write a shared fact into workspace memory that every agent can read. Use a stable 'key' for a fact that should have ONE canonical value (it upserts instead of duplicating). If another agent had written a different value, the result is flagged contested and keeps the prior value.", inputSchema: obj({ key: { type: "string" }, content: { type: "string" }, tags: { type: "array", items: { type: "string" } }, ttl_seconds: { type: "number", description: "Mark the fact stale after this long." }, confidence: { type: "number" } }, ["content"]) },
     { name: "memory.get", description: "Read a shared fact by key. Warns if the fact is stale (TTL expired) or contested (another agent replaced a different value) — check before acting on it.", inputSchema: obj({ key: { type: "string" } }, ["key"]) },
     { name: "memory.search", description: "Search shared workspace memory. Semantic (by meaning) when an embeddings provider is configured, otherwise lexical (keyword). Check here before doing research another agent may already have done.", inputSchema: obj({ q: { type: "string" }, tag: { type: "string" }, include_stale: { type: "boolean" } }) },
+    // Coordination: claim work so two agents never do it twice. ALWAYS claim before starting.
+    { name: "task.add", description: "Create a shared task other agents can see and claim. Optionally require a capability, or declare it depends on other tasks (it can't be claimed until those are done).", inputSchema: obj({ title: { type: "string" }, required_capability: { type: "string" }, depends_on: { type: "array", items: { type: "string" } } }, ["title"]) },
+    { name: "task.list", description: "List the shared task board — what's open, claimed (and by whom), or blocked. Check before starting work.", inputSchema: obj() },
+    { name: "task.claim", description: "Atomically claim a task before you start it. If another agent already claimed it you get claimed:false + the owner — do NOT do the work; pick another task. Blocked by unfinished dependencies.", inputSchema: obj({ task_id: { type: "string" } }, ["task_id"]) },
+    { name: "task.complete", description: "Mark a task done when you finish it, so its dependents become claimable.", inputSchema: obj({ task_id: { type: "string" }, output: { type: "string" } }, ["task_id"]) },
+    { name: "handoff.create", description: "Hand a task to another agent with context. They accept (it becomes theirs) or reject.", inputSchema: obj({ to: { type: "string" }, context: { type: "string" }, task_id: { type: "string" } }, ["to"]) },
   ];
 }
 
@@ -65,9 +72,12 @@ function asMcpResult(result) {
   return { content: [{ type: "text", text: typeof result === "string" ? result : JSON.stringify(result) }] };
 }
 
-async function execute(name, params, conns, dir, project) {
+async function execute(name, params, conns, dir, project, agent, link) {
   // `memory.*` is a reserved namespace — the shared Context layer, governed like any tool.
   if (name.startsWith("memory.")) return asMcpResult(await memory.runMemoryTool(dir, name, params, project));
+  // `task.*` / `handoff.*` — coordination. Cloud is authoritative once graduated (race-safe
+  // across machines); otherwise the local board (atomic claim within this .foundry).
+  if (name.startsWith("task.") || name.startsWith("handoff.")) return asMcpResult(await runCoordTool(dir, name, params, agent, link));
   const dot = name.indexOf(".");
   if (dot > 0 && conns[name.slice(0, dot)]) {
     return mcp.call(conns[name.slice(0, dot)], name.slice(dot + 1), params); // upstream MCP result (http or stdio)
@@ -125,6 +135,21 @@ async function serve(dir) {
   if (pending.length) await Promise.allSettled(pending);
 }
 
+// The coordination adapter behind task.* / handoff.* MCP tools. Routes to the cloud
+// workspace when graduated (authoritative claims across machines), else the local board.
+async function runCoordTool(dir, name, params, agent, link) {
+  const c = new Coord(store.ledgerDir(dir));
+  const a = agent || "coding-agent";
+  switch (name) {
+    case "task.add": return link ? await cloud.cloudCoord.addTask(link, { title: params.title, required_capability: params.required_capability, depends_on: params.depends_on, agent: a }) : c.addTask({ title: params.title, required_capability: params.required_capability, depends_on: params.depends_on, agent: a });
+    case "task.list": return { tasks: link ? await cloud.cloudCoord.list(link) : c.list() };
+    case "task.claim": return link ? await cloud.cloudCoord.claim(link, params.task_id, a) : c.claim(params.task_id, a);
+    case "task.complete": return link ? await cloud.cloudCoord.complete(link, params.task_id, a, params.output) : c.complete(params.task_id, a, params.output);
+    case "handoff.create": return link ? await cloud.cloudCoord.handoff(link, { from: a, to: params.to, task_id: params.task_id, context: params.context }) : c.handoff({ from: a, to: params.to, task_id: params.task_id, context: params.context });
+    default: { const e = new Error(`unknown coordination tool '${name}'`); e.code = -32601; throw e; }
+  }
+}
+
 async function handleCall(id, params, ctx) {
   const { conns, led, ok, fail, log, project, dir, link, pending } = ctx;
   const name = params.name;
@@ -162,7 +187,7 @@ async function handleCall(id, params, ctx) {
   const t0 = Date.now();
   let result, isErr = false;
   try {
-    result = await execute(name, clean, conns, dir, project);
+    result = await execute(name, clean, conns, dir, project, agent, link);
   } catch (e) {
     if (e.code === -32601) { log(`404  ${name}`); return fail(id, -32601, e.message); }
     isErr = true;

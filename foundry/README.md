@@ -55,6 +55,8 @@ as Invoke's cloud, on your disk:
 | `foundry run [tool] [json]` | Run a tool/agent through the ledger. `--key K` (idempotency), `--agent A`, `--json` |
 | `foundry receipts [--verify]` | List receipts (active workspace), or verify the signed hash-chain |
 | `foundry memory set\|get\|search` | Shared context — one canonical fact per key; warns when a fact is **stale** or **contested** |
+| `foundry task add\|claim\|done\|dep\|dag` | Multi-agent coordination — **atomic claim** (exactly one owner) + dependency DAG |
+| `foundry handoff <to> "ctx"` | Pass a task to another agent (`inbox` / `accept` / `reject`) |
 | `foundry policy [allow\|deny\|approve\|rm\|test] <pattern>` | Execution control — gate tools/models (deny > approve > allow) |
 | `foundry trace` | The execution pipeline — every governed step, agent, duration, cost, receipt |
 | `foundry diff <ref1> <ref2>` | Compare two executions — cost, latency, output ("why A vs B") |
@@ -175,6 +177,39 @@ vector never points at replaced text. Vectors from different models aren't compa
 > **Honest fallback.** With **no provider configured, search is lexical** (substring/keyword) and
 > the output says so — Foundry never dresses a keyword match up as semantic. `"how expensive is it"`
 > matches nothing lexically; that's the gap the provider closes.
+
+## Multi-agent coordination — a team, not a mob
+
+Several agents on one workspace need to *not* collide: two shouldn't do the same task, and
+work has an order. Foundry gives them the primitives — and every op is a receipted Execution:
+
+```bash
+research=$(foundry task add "Research competitors")          # -> task_…
+foundry task add "Write the brief" --needs $research         # can't start until research is done
+
+foundry task claim $write --agent writer
+#  ◌ blocked — Write the brief has unfinished dependencies:  Research competitors (open)
+
+# two agents race for the same task — exactly ONE wins:
+foundry task claim $research --agent alice   #  ✔ claimed
+foundry task claim $research --agent bob     #  ✗ already claimed by alice — you did NOT double-book
+
+foundry task done $research --agent alice    #  now dependents unblock
+foundry handoff editor "final polish" --task $write --agent writer
+foundry handoff accept <id> --agent editor   #  the task is now editor's
+```
+
+- **Atomic claim** — the whole point. N agents race, one wins, everyone else is told *"already
+  claimed by X"* instead of doing the work twice. (Verified under an 8-process race, and
+  cross-machine against the cloud.)
+- **Dependency DAG** — `--needs` gates a task until its upstream tasks are done; cycles are refused.
+- **Handoffs** — pass a task to another agent with context; they accept (it becomes theirs) or reject.
+- **Agents self-coordinate** through `foundry serve`: `task.add` · `task.list` · `task.claim` ·
+  `task.complete` · `handoff.create` are MCP tools, so Claude/Codex claim work before starting it.
+
+Local, the board is authoritative (atomic within one `.foundry`). Once you `foundry push`, claims
+route to the **cloud workspace** — race-safe across machines, so agents on different laptops still
+never double-book.
 
 ## Deploy to Invoke — and watch it live
 
