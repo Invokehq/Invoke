@@ -883,7 +883,7 @@ async function memoryCmd(args) {
   if (sub === "set") {
     const key = args._[1], content = args._[2] || args.content;
     if (!content) throw new Error(`Usage: foundry memory set <key> "<fact>" [--ttl 3600] [--tags a,b]`);
-    const params = { key, content, agent, ttl_seconds: args.ttl ? Number(args.ttl) : undefined, tags: args.tags ? String(args.tags).split(",") : undefined };
+    const params = { key, content, agent, shared: !!args.shared, ttl_seconds: args.ttl ? Number(args.ttl) : undefined, tags: args.tags ? String(args.tags).split(",") : undefined };
     const r = await memory.runMemoryTool(dir, "memory.set", params, project);
     const eff = await commit("memory.set", { key, content }, r);
 
@@ -906,7 +906,8 @@ async function memoryCmd(args) {
       console.log(`  ${dim("now:")}  ${r.memory.content}`);
       console.log(dim(`  the prior value is kept in revisions — nothing was silently overwritten.`));
     } else {
-      console.log(`${green(r.updated ? "✔ updated" : "✔ remembered")}  ${key ? b(key) : dim("(unkeyed)")}  ${dim("v" + r.memory.version)}${r.embedded ? dim("  · embedded (semantic)") : ""}`);
+      const scopeTag = r.scope === "shared" ? green(" [shared]") + dim(" — every project sees this") : "";
+      console.log(`${green(r.updated ? "✔ updated" : "✔ remembered")}  ${key ? b(key) : dim("(unkeyed)")}  ${dim("v" + r.memory.version)}${r.embedded ? dim("  · embedded (semantic)") : ""}${scopeTag}`);
     }
     console.log(`  receipt ${b(eff.receipt.number)}  ${dim("memory Execution — receipted like any side effect")}`);
     return 0;
@@ -932,24 +933,36 @@ async function memoryCmd(args) {
 
   if (sub === "search" || sub === "list") {
     const q = sub === "search" ? args._[1] : undefined;
-    const r = await memory.runMemoryTool(dir, "memory.search", { q, tag: args.tag, include_stale: !args["no-stale"] }, project);
+    const r = await memory.runMemoryTool(dir, "memory.search", { q, tag: args.tag, scope: args.scope, include_stale: !args["no-stale"] }, project);
     if (args.json) { console.log(JSON.stringify(r, null, 2)); return 0; }
     if (r.cost_micros) await commit("memory.search", { q }, r); // a semantic search made a real embed call
     const mode = r.search === "semantic" ? green("semantic") + dim(" (" + r.model + ")") : dim("lexical");
-    console.log(`${b("Memory")} ${dim("— " + project.name + " · " + r.count + " fact(s)" + (q ? " matching \"" + q + "\"" : "") + " · ")}${mode}\n`);
+    console.log(`${b("Memory")} ${dim("— " + project.name + " · " + r.count + " fact(s)" + (q ? " matching \"" + q + "\"" : "") + " · " + (r.scopes || []).join("+") + " · ")}${mode}\n`);
     if (!r.count) { console.log(dim("  nothing yet — foundry memory set <key> \"<fact>\"")); return 0; }
     for (const m of r.memory) {
-      const flags = [m.score != null ? dim(m.score.toFixed(2)) : null, m.contested ? yellow("contested") : null, m.stale ? yellow("stale") : null].filter(Boolean).join(" ");
-      console.log(`  ${b((m.key || "(unkeyed)").padEnd(22))} ${dim("v" + String(m.version).padEnd(2))} ${String(m.content).slice(0, 46).padEnd(48)} ${flags}`);
+      const flags = [m.score != null ? dim(m.score.toFixed(2)) : null, m.scope === "shared" ? green("shared") : null, m.contested ? yellow("contested") : null, m.stale ? yellow("stale") : null].filter(Boolean).join(" ");
+      console.log(`  ${b((m.key || "(unkeyed)").padEnd(22))} ${dim("v" + String(m.version).padEnd(2))} ${String(m.content).slice(0, 44).padEnd(46)} ${flags}`);
     }
     if (r.search === "lexical" && q) console.log(dim(`\n  lexical (keyword) search. for semantic: foundry memory provider`));
     return 0;
   }
 
+  if (sub === "sync") {
+    const r = await memory.syncShared(project, cloud);
+    if (args.json) { console.log(JSON.stringify(r, null, 2)); return 0; }
+    if (r.error) { console.log(`${yellow("○")} ${r.error}`); return 1; }
+    console.log(`${green("✔ synced shared knowledge")} ${dim("· " + r.workspace)}`);
+    console.log(`  ${dim("pushed")} ${b(String(r.pushed))} ${dim("· pulled")} ${b(String(r.pulled))}${r.contested ? "  " + yellow(r.contested + " contested") : ""}`);
+    console.log(dim("  shared facts now span every machine on this org — not just this box."));
+    if (r.pulled) console.log(dim("  new vectors needed? foundry memory reindex"));
+    return 0;
+  }
+
   console.log(`${b("foundry memory")} — the shared Context layer, governed.\n`);
-  console.log(`  memory set <key> "<fact>" [--ttl S] [--tags a,b]   one canonical fact per key`);
+  console.log(`  memory set <key> "<fact>" [--shared] [--ttl S]     --shared = every project sees it`);
   console.log(`  memory get <key>                                   warns if stale or contested`);
-  console.log(`  memory search [q] [--tag t] [--no-stale]           semantic if a provider is set, else lexical`);
+  console.log(`  memory search [q] [--scope workspace|shared]       spans both scopes by default`);
+  console.log(`  memory sync                                        push/pull shared facts via the cloud`);
   console.log(`  memory provider [url] [model]                      turn on semantic search (Ollama/OpenAI)`);
   console.log(`  memory reindex                                     embed facts written before the provider`);
   console.log(dim(`\n  Your agents get the same store as MCP tools through \`foundry serve\`:`));

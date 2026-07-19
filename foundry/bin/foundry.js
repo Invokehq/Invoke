@@ -6,7 +6,7 @@ try { require("node:dns").setDefaultResultOrder("ipv4first"); } catch { /* older
 const commands = require("../src/commands");
 const pkg = require("../package.json");
 
-const BOOL_FLAGS = new Set(["json", "force", "verify", "help", "version", "follow", "no-follow", "f", "yes", "y", "once"]);
+const BOOL_FLAGS = new Set(["json", "force", "verify", "help", "version", "follow", "no-follow", "f", "yes", "y", "once", "shared"]);
 const ALIAS = { h: "help", V: "version", f: "follow", y: "yes" };
 // Flags that may be given more than once collect into an array (--env A --env B).
 const REPEATABLE = new Set(["env", "header"]);

@@ -12,12 +12,15 @@
 //                   under you. This is the stale-context signal.
 //   stale         — a TTL'd fact whose time is up: it went quietly out of date
 //
-// Search is LEXICAL (substring/keyword match), not semantic. Real semantic retrieval
-// needs embeddings; that is deliberately not built or claimed here.
+// Search is SEMANTIC when an embeddings provider is configured (real vectors, ranked by
+// cosine), and falls back to lexical substring matching otherwise — the result always says
+// which ran. Facts live in one of two scopes: this workspace, or `shared` — knowledge that
+// spans every project, so an agent in one repo finds what another repo already learned.
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const embeddings = require("./embeddings");
+const store = require("./store");
 
 const MEMORY_TOOLS = ["memory.set", "memory.get", "memory.search"];
 const MAX_REVISIONS = 10;
@@ -40,6 +43,9 @@ class Memory {
   // writing concurrently could lose an update — and contested-detection needs the
   // read-then-write to be atomic to see the prior value.
   _withLock(fn) {
+    // The directory may not exist yet — the shared store lives outside any project, so its
+    // first write creates it. The lockfile is opened before _save(), so mkdir must be here.
+    fs.mkdirSync(path.dirname(this.lock), { recursive: true });
     for (let i = 0; i < 400; i++) {
       let fd;
       try { fd = fs.openSync(this.lock, "wx"); } catch (e) { if (e.code !== "EEXIST") throw e; sleepSync(5); continue; }
@@ -175,9 +181,18 @@ class Memory {
 // caller wraps them in the ledger (so every read/write is receipted like any Execution).
 // `project` supplies the embeddings provider config; with a provider, writes are embedded
 // and search is semantic — otherwise everything gracefully falls back to lexical.
+// Knowledge that outlives one project. A fact written `--shared` lands in a store above
+// any workspace, so an agent working in a DIFFERENT repo can still find it — by meaning,
+// not just by key. Reads always span both scopes and label where each hit came from.
+function sharedDir() { return path.join(store.home(), "shared"); }
+const withScope = (rows, scope) => rows.map((m) => Object.assign({}, m, { scope }));
+
 async function runMemoryTool(dir, tool, params = {}, project) {
   const mem = new Memory(dir);
+  const shared = new Memory(sharedDir());
   const prov = embeddings.provider(project);
+  const limit = Math.max(1, Math.min(Number(params.limit) || 10, 200));
+
   switch (tool) {
     case "memory.set": {
       // Embed the fact so it's findable by meaning. Best-effort: a provider hiccup must
@@ -190,34 +205,46 @@ async function runMemoryTool(dir, tool, params = {}, project) {
           cost = e.cost_micros;
         } catch { /* store unembedded; `foundry memory reindex` backfills */ }
       }
-      const r = mem.set(params);
+      const scope = params.shared ? "shared" : "workspace";
+      const r = (params.shared ? shared : mem).set(params);
       r.cost_micros = cost;
       r.embedded = !!(prov && params.embedding);
+      r.scope = scope;
       return r.conflict
         ? Object.assign(r, { warning: `contested: '${params.key}' held a different value (v${r.memory.version - 1}), written by ${r.memory.revisions.slice(-1)[0].by || "another agent"}. Previous kept in revisions.` })
         : r;
     }
     case "memory.get": {
       if (!params.key) throw new Error("memory.get needs {\"key\": \"...\"}");
-      const m = mem.get(params.key);
+      const local = mem.get(params.key);
+      const org = shared.get(params.key);
+      const m = local || org;                       // this project's answer wins over the org's
       if (!m) return { found: false, key: params.key };
-      return Object.assign({ found: true }, m,
+      return Object.assign({ found: true, scope: local ? "workspace" : "shared" }, m,
+        local && org ? { also_shared: true, shared_value: org.content } : {},
         m.stale ? { warning: `stale: this fact's TTL expired at ${m.expires_at} — re-verify before acting on it.` } : {},
         m.contested ? { warning: `contested: last changed by ${m.updated_by || "another agent"} (v${m.version}); a different value was replaced. See revisions.` } : {});
     }
     case "memory.search": {
-      // Semantic when a provider is configured and there's a query to embed; otherwise
-      // lexical. The result labels which mode ran, so a caller is never misled.
+      // Search this workspace AND the shared org store, then rank them together — so an
+      // agent in one repo surfaces what another repo already learned.
+      const scopes = params.scope === "workspace" ? ["workspace"] : params.scope === "shared" ? ["shared"] : ["workspace", "shared"];
       const wantSemantic = !!prov && !!params.q && params.semantic !== false;
       if (wantSemantic) {
         try {
           const e = await embeddings.embed(prov, params.q);
-          const hits = mem.semanticSearch(e.vectors[0], e.model, params);
-          return { count: hits.length, memory: hits, search: "semantic", model: e.model, cost_micros: e.cost_micros };
+          const hits = [
+            ...(scopes.includes("workspace") ? withScope(mem.semanticSearch(e.vectors[0], e.model, params), "workspace") : []),
+            ...(scopes.includes("shared") ? withScope(shared.semanticSearch(e.vectors[0], e.model, params), "shared") : []),
+          ].sort((a, b) => b.score - a.score).slice(0, limit);
+          return { count: hits.length, memory: hits, search: "semantic", model: e.model, cost_micros: e.cost_micros, scopes };
         } catch { /* provider down → fall through to lexical */ }
       }
-      const hits = mem.search(params);
-      return { count: hits.length, memory: hits, search: "lexical", cost_micros: 0 };
+      const hits = [
+        ...(scopes.includes("workspace") ? withScope(mem.search(params), "workspace") : []),
+        ...(scopes.includes("shared") ? withScope(shared.search(params), "shared") : []),
+      ].slice(0, limit);
+      return { count: hits.length, memory: hits, search: "lexical", cost_micros: 0, scopes };
     }
     default:
       throw new Error(`unknown memory tool '${tool}'. Try: ${MEMORY_TOOLS.join(", ")}`);
@@ -225,16 +252,53 @@ async function runMemoryTool(dir, tool, params = {}, project) {
 }
 
 // Backfill embeddings for facts that don't have one for the active model (offline writes,
-// or a provider configured after the fact). Batches into one embeddings call.
+// or a provider configured after the fact). Covers BOTH scopes — shared knowledge is
+// useless if it was written before a provider existed and never got vectors.
 async function reindex(dir, project) {
   const prov = embeddings.provider(project);
   if (!prov) return { error: "no embeddings provider configured" };
-  const mem = new Memory(dir);
-  const todo = mem.unembedded(prov.model);
-  if (!todo.length) return { reindexed: 0, model: prov.model, cost_micros: 0 };
-  const e = await embeddings.embed(prov, todo.map((m) => m.content));
-  todo.forEach((m, i) => mem.attachEmbedding(m.id, e.vectors[i], e.model));
-  return { reindexed: todo.length, model: e.model, cost_micros: e.cost_micros };
+  let reindexed = 0, cost = 0;
+  for (const mem of [new Memory(dir), new Memory(sharedDir())]) {
+    const todo = mem.unembedded(prov.model);
+    if (!todo.length) continue;
+    const e = await embeddings.embed(prov, todo.map((m) => m.content));
+    todo.forEach((m, i) => mem.attachEmbedding(m.id, e.vectors[i], e.model));
+    reindexed += todo.length;
+    cost += e.cost_micros;
+  }
+  return { reindexed, model: prov.model, cost_micros: cost };
 }
 
-module.exports = { Memory, runMemoryTool, reindex, MEMORY_TOOLS };
+// Sync shared knowledge through the cloud so it spans MACHINES, not just repos on one box.
+// Push: every shared fact goes up tagged `shared`. Pull: shared-tagged facts from every
+// workspace in the org come back down. Keyed upsert means re-syncing converges instead of
+// duplicating, and a fact that changed elsewhere lands as `contested` — not silently.
+async function syncShared(project, cloud) {
+  const link = cloud.cloudLink(project);
+  if (!link) return { error: "not linked — run `foundry login` then `foundry push`" };
+  const shared = new Memory(sharedDir());
+  let pushed = 0, pulled = 0, contested = 0;
+
+  for (const m of shared.list()) {
+    const r = await cloud.mirrorMemory(link, {
+      key: m.key, content: m.content, agent: m.updated_by || m.creator_agent,
+      tags: [...new Set([...(m.tags || []), "shared"])],
+    });
+    if (r && r.synced) pushed++;
+  }
+
+  for (const remote of await cloud.orgMemory(link)) {
+    if (!(remote.tags || []).includes("shared") || !remote.key) continue;
+    const mine = shared.get(remote.key);
+    if (mine && mine.content === remote.content) continue; // already converged
+    const r = shared.set({
+      key: remote.key, content: remote.content, agent: remote.creator_agent || remote.updated_by || "cloud",
+      tags: remote.tags,
+    });
+    pulled++;
+    if (r.conflict) contested++;
+  }
+  return { pushed, pulled, contested, workspace: link.wsId };
+}
+
+module.exports = { Memory, runMemoryTool, reindex, syncShared, sharedDir, MEMORY_TOOLS };

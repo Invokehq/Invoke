@@ -142,6 +142,25 @@ const cloudCoord = {
   async resolveHandoff(link, id, accept, by) { const r = await _coord(link, "POST", `/handoffs/${id}/${accept ? "accept" : "reject"}`, { by }); return r.json; },
 };
 
+// ── Shared knowledge across workspaces. Memory is stored per workspace in the cloud, so
+// "org knowledge" is the union of shared-tagged facts across the org's workspaces. Writes
+// reuse mirrorMemory (this project's workspace); reads fan out across the org, which is
+// what lets a fact learned in one repo surface in another.
+async function orgMemory(link, limit = 200) {
+  const out = [];
+  try {
+    const wsRes = await request(link, "GET", "/v1/workspaces", null);
+    const list = (JSON.parse(wsRes.body || "{}").workspaces || []).map((w) => w.id).filter(Boolean).slice(0, 12);
+    for (const id of list) {
+      try {
+        const r = await request(link, "GET", `/v1/workspaces/${encodeURIComponent(id)}/memory?limit=${limit}`, null);
+        for (const m of JSON.parse(r.body || "{}").memory || []) out.push(m);
+      } catch { /* skip a workspace we can't read */ }
+    }
+  } catch { /* offline — caller reports 0 pulled */ }
+  return out;
+}
+
 // Backfill: mirror every committed effect in the local ledger (used by `foundry push`).
 async function mirrorAll(link, effects) {
   let sent = 0, failed = 0;
@@ -153,4 +172,4 @@ async function mirrorAll(link, effects) {
   return { sent, failed };
 }
 
-module.exports = { cloudLink, mirrorEffect, mirrorMemory, mirrorAll, ensureAgent, cloudCoord, DEFAULT_BASE };
+module.exports = { cloudLink, orgMemory, mirrorEffect, mirrorMemory, mirrorAll, ensureAgent, cloudCoord, DEFAULT_BASE };
