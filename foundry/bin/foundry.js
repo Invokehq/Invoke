@@ -6,7 +6,7 @@ try { require("node:dns").setDefaultResultOrder("ipv4first"); } catch { /* older
 const commands = require("../src/commands");
 const pkg = require("../package.json");
 
-const BOOL_FLAGS = new Set(["json", "force", "verify", "help", "version", "follow", "no-follow", "f", "yes", "y"]);
+const BOOL_FLAGS = new Set(["json", "force", "verify", "help", "version", "follow", "no-follow", "f", "yes", "y", "once"]);
 const ALIAS = { h: "help", V: "version", f: "follow", y: "yes" };
 // Flags that may be given more than once collect into an array (--env A --env B).
 const REPEATABLE = new Set(["env", "header"]);
@@ -89,6 +89,13 @@ ${bold("SERVE (run your coding agent on Foundry)")}
   model serve              Governed LLM proxy (OpenAI-compatible) — model calls become
                             Executions: cost, budget, cache. ${dim("OPENAI_BASE_URL=localhost:4000/v1")}
 
+${bold("DEPLOY AGENTS (they run without you)")}
+  worker --agent A --cmd "…"
+                           A deployed agent: stays alive, claims work off the board, runs
+                            it, repeats. Start MORE workers to scale — claims are atomic.
+                            --once   drain the board and exit (point cron at this)
+                            --interval S · --max N · --timeout S
+
 ${bold("DEPLOY (to Invoke)")}
   login [--token K]        Link this machine to Invoke (opens the web app)
   push                     Graduate the local workspace to a durable cloud one
@@ -112,7 +119,7 @@ async function main() {
     connect: commands.connect, memory: commands.memory,
     task: commands.task, handoff: commands.handoff,
     setup: commands.setup, doctor: commands.doctor, approvals: commands.approvals,
-    budget: commands.budget,
+    budget: commands.budget, worker: commands.worker,
   };
   const fn = table[cmd];
   if (!fn) {

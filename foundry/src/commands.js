@@ -2,7 +2,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const store = require("./store");
 const { Ledger } = require("./ledger");
 const { runTool, BUILTINS, toolType } = require("./tools");
@@ -1202,6 +1202,88 @@ async function connect(args) {
   return liveTail(dir);
 }
 
+// ─────────────────────────────── worker (agents that stay running) ───────────────────────────────
+// A deployed agent, not a one-shot run: the worker stays alive, claims work off the shared
+// board, runs it, and repeats. Because claims are atomic, you scale by starting MORE
+// workers — exactly one wins each task, so none of them duplicate work. `--once` drains
+// the board and exits, which is what you point cron at.
+async function workerCmd(args) {
+  const dir = requireProject();
+  const project = store.readProject(dir);
+  const led = new Ledger(store.ledgerDir(dir));
+  const link = cloud.cloudLink(project);
+  const board = new coord.Coord(store.ledgerDir(dir));
+  const agent = args.agent || project.agent?.id || "worker";
+  const cmd = args.cmd || args.command || null;
+  const interval = Math.max(250, Number(args.interval || 2) * 1000);
+  const once = !!args.once;
+  const maxTasks = args.max ? Number(args.max) : Infinity;
+
+  const list = async () => (link ? await cloud.cloudCoord.list(link) : board.list());
+  const claim = async (id) => (link ? await cloud.cloudCoord.claim(link, id, agent) : board.claim(id, agent));
+  const finish = async (id, out) => (link ? await cloud.cloudCoord.complete(link, id, agent, out) : board.complete(id, agent, out));
+  const giveBack = async (id) => (link ? await cloud.cloudCoord.release(link, id, agent) : board.release(id, agent));
+  const rec = async (tool, params, result, status) => {
+    const eff = led.commit({ agent, tool, params, key: null, result, type: "coord", status: status || "committed", duration_ms: 0 });
+    if (link) await cloud.mirrorEffect(link, eff).catch(() => {});
+    return eff;
+  };
+
+  console.log(`\n  ${b("● worker " + agent)}  ${dim(link ? "cloud " + link.wsId : "local")}`);
+  console.log(dim(`  ${cmd ? "runs: " + cmd : "no --cmd — claims and completes only"}`));
+  console.log(dim(`  polling every ${interval / 1000}s · ${once ? "--once (drain, then exit)" : "Ctrl-C to stop"}\n`));
+
+  let completed = 0, stopping = false;
+  // Tasks this worker already failed. A failure releases the task so someone else can
+  // retry it — but without this, the same worker would instantly re-claim it and spin in
+  // a hot retry loop, never draining and never exiting.
+  const failedHere = new Set();
+  process.on("SIGINT", () => { stopping = true; console.log(dim("\n  ● finishing the current task, then stopping…")); });
+
+  while (!stopping && completed < maxTasks) {
+    let worked = false;
+    for (const t of (await list()).filter((x) => x.status === "open" && !failedHere.has(x.id))) {
+      if (stopping) break;
+      const got = await claim(t.id);
+      if (!got.claimed) continue; // blocked by a dependency, or another worker won the race
+      await rec("task.claim", { task: t.id }, got);
+      console.log(`  ${green("▸ claimed")}  ${b(String(t.title).slice(0, 46))} ${dim(t.id)}`);
+
+      const t0 = Date.now();
+      let ok = true, output = "";
+      if (cmd) {
+        const res = spawnSync(cmd, {
+          shell: true, encoding: "utf8", cwd: dir, timeout: Number(args.timeout || 300) * 1000,
+          env: { ...process.env, FOUNDRY_TASK_ID: t.id, FOUNDRY_TASK_TITLE: t.title, FOUNDRY_AGENT: agent },
+          input: JSON.stringify(t),
+        });
+        ok = res.status === 0;
+        output = ((ok ? res.stdout : res.stderr || res.stdout) || "").trim();
+      }
+      const dur = Date.now() - t0;
+      await rec("worker.task", { task: t.id, cmd }, { task: t.id, ok, output: output.slice(0, 500) }, ok ? "committed" : "denied");
+
+      if (ok) {
+        await finish(t.id, output.slice(0, 2000));
+        completed++;
+        console.log(`  ${green("✓ done")}     ${b(String(t.title).slice(0, 46))} ${dim(fmtDur(dur) + (output ? " · " + output.split("\n")[0].slice(0, 52) : ""))}`);
+      } else {
+        failedHere.add(t.id);  // don't re-grab it ourselves; another worker still can
+        await giveBack(t.id);  // hand it back so someone else (or a later run) retries it
+        console.log(`  ${red("✗ failed")}   ${b(String(t.title).slice(0, 46))} ${dim("released · " + output.split("\n")[0].slice(0, 52))}`);
+      }
+      worked = true;
+      break; // re-read the board: finishing this task may have unblocked dependents
+    }
+    if (!worked) {
+      if (once) break;
+      await new Promise((r) => setTimeout(r, interval));
+    }
+  }
+  console.log(`\n  ${b("worker stopped")} ${dim(completed + " task(s) completed")}`);
+  return 0;
+}
+
 // ─────────────────────────────── budget (fleet + per-agent caps) ───────────────────────────────
 // A fleet cap (all agents) plus optional per-agent caps. Enforced by the model proxy: once
 // an agent — or the fleet — crosses its cap, its next spending call is refused (429).
@@ -1441,7 +1523,7 @@ async function doctorCmd(args) {
   return anyBad ? 1 : 0;
 }
 
-module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd, diff, mcp: mcpCmd, connect, memory: memoryCmd, task: taskCmd, handoff: handoffCmd, setup: setupCmd, doctor: doctorCmd, approvals: approvalsCmd, budget: budgetCmd };
+module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd, diff, mcp: mcpCmd, connect, memory: memoryCmd, task: taskCmd, handoff: handoffCmd, setup: setupCmd, doctor: doctorCmd, approvals: approvalsCmd, budget: budgetCmd, worker: workerCmd };
 
 function parseJson(s) {
   try { const v = JSON.parse(s); if (v && typeof v === "object") return v; throw 0; }
