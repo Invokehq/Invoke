@@ -107,3 +107,19 @@ test("memory.get prefers this project's answer but still finds shared-only keys"
   assert.equal(overridden.also_shared, true, "flags that the org has a different answer");
   assert.match(overridden.shared_value, /30 day/);
 });
+
+// Regression: model output very often starts with "---". The arg parser treated any
+// leading "--" as a flag, so the content vanished and the fact was never written.
+test("content that starts with dashes survives the CLI (-- ends option parsing)", () => {
+  const { spawnSync } = require("node:child_process");
+  const BIN = path.join(__dirname, "..", "bin", "foundry.js");
+  const dir = tmp();
+  const env = { ...process.env, FOUNDRY_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "fh-dash-")) };
+  spawnSync(process.execPath, [BIN, "init", "t"], { cwd: dir, env });
+  const body = "--- 1. Subject: hello\nthree short sentences.";
+  const set = spawnSync(process.execPath, [BIN, "memory", "set", "--agent", "m", "--", "emails", body], { cwd: dir, encoding: "utf8", env });
+  assert.match(set.stdout, /remembered|updated/);
+  const got = JSON.parse(spawnSync(process.execPath, [BIN, "memory", "get", "emails", "--json"], { cwd: dir, encoding: "utf8", env }).stdout);
+  assert.equal(got.found, true);
+  assert.match(got.content, /^--- 1\. Subject: hello/);
+});

@@ -17,6 +17,9 @@ function parse(argv) {
   const set = (k, v) => { args[k] = REPEATABLE.has(k) ? [].concat(args[k] || [], v) : v; };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    // `--` ends option parsing: everything after it is a positional, even if it starts with
+    // a dash. Without this, storing text like "--- 1. Subject:" silently vanishes into a flag.
+    if (a === "--") { args._.push(...argv.slice(i + 1)); break; }
     if (a.startsWith("--")) {
       const [k, inlineV] = a.slice(2).split(/=(.*)/s);
       if (BOOL_FLAGS.has(k)) { args[k] = true; }

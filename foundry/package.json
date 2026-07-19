@@ -1,6 +1,6 @@
 {
   "name": "@invokehq/foundry",
-  "version": "0.16.0",
+  "version": "0.16.1",
   "description": "Forge AI agents locally with a governed workspace — exactly-once, receipted, no account needed. Deploy to Invoke when you're ready.",
   "bin": {
     "foundry": "bin/foundry.js"
