@@ -704,8 +704,54 @@ async function model(args) {
     await serveModel(dir, { port: args.port, upstream: args.upstream, keyEnv: args.key });
     return 0;
   }
+  // Providers: an ordered routing + fallback chain. Each declares which models it serves,
+  // so a request goes to the first match and falls through to the next when one is down,
+  // rate-limited, or misconfigured.
+  if (args._[0] === "provider") {
+    const dir = requireProject();
+    const project = store.readProject(dir);
+    const act = args._[1];
+    project.providers = project.providers || [];
+
+    if (act === "add") {
+      const name = args._[2], url = args._[3];
+      if (!name || !url) throw new Error(`Usage: foundry model provider add <name> <url> [--key-env ENV] [--models "gpt-*,o3*"]`);
+      const models = args.models ? String(args.models).split(",").map((s) => s.trim()).filter(Boolean) : ["*"];
+      project.providers = project.providers.filter((p) => p.name !== name);
+      project.providers.push({ name, url, key_env: args["key-env"] || undefined, models });
+      store.writeProject(dir, project);
+      console.log(`${green("✔ provider")} ${b(name)} ${dim(url)}`);
+      console.log(dim(`  serves: ${models.join(", ")}${args["key-env"] ? "  ·  key from $" + args["key-env"] : "  ·  no key"}`));
+      console.log(dim(`  order matters — earlier providers are tried first. foundry model provider ls`));
+      return 0;
+    }
+    if (act === "rm") {
+      const name = args._[2];
+      if (!name) throw new Error("Usage: foundry model provider rm <name>");
+      project.providers = project.providers.filter((p) => p.name !== name);
+      store.writeProject(dir, project);
+      console.log(dim(`removed ${name}`));
+      return 0;
+    }
+    if (args.json) { console.log(JSON.stringify({ providers: project.providers }, null, 2)); return 0; }
+    console.log(`${b("Model providers")} ${dim("— tried in order, first match serves")}\n`);
+    if (!project.providers.length) {
+      console.log(dim("  none — the single --upstream is used."));
+      console.log(dim(`  add one:  foundry model provider add openai https://api.openai.com/v1 --key-env OPENAI_API_KEY --models "gpt-*"`));
+      return 0;
+    }
+    project.providers.forEach((p, i) => {
+      const keyState = p.key_env ? (process.env[p.key_env] ? green("key set") : yellow("$" + p.key_env + " unset")) : dim("no key");
+      console.log(`  ${dim(String(i + 1) + ".")} ${b(p.name.padEnd(12))} ${dim((p.url || "").padEnd(38))} ${dim((p.models || ["*"]).join(","))}  ${keyState}`);
+    });
+    console.log(dim("\n  a call falls through to the next provider on timeout, 429, 5xx, or auth failure."));
+    return 0;
+  }
+
   console.log(`${b("foundry model")} — govern model calls as Executions (cost, budget, cache).`);
   console.log(`  ${b("foundry model serve")} [--port 4000] [--upstream URL] [--key ENVVAR]`);
+  console.log(`  ${b("foundry model provider")} add <name> <url> [--key-env ENV] [--models "gpt-*"]`);
+  console.log(`  ${b("foundry model provider")} ls | rm <name>        routing + fallback chain`);
   console.log(dim("  Point your agent's SDK at the proxy:  OPENAI_BASE_URL=http://localhost:4000/v1"));
   console.log(dim("  Then see spend + latency in  foundry trace  ·  foundry receipts"));
   return 0;

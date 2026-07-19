@@ -50,6 +50,45 @@ function forward(upstream, key, body) {
   });
 }
 
+// ── Multi-provider routing. Providers are an ordered list on the project; each declares
+// which models it serves (globs). A request picks every provider that matches, in order —
+// that's the fallback chain. One provider being down, rate-limited, or misconfigured
+// shouldn't end the call when another can serve the same model.
+//
+//   project.providers = [
+//     { name: "openai", url: "https://api.openai.com/v1", key_env: "OPENAI_API_KEY", models: ["gpt-*", "o3*"] },
+//     { name: "local",  url: "http://127.0.0.1:11434/v1",                            models: ["*"] },
+//   ]
+function providerChain(project, model, legacyUpstream, legacyKey) {
+  const all = ((project && project.providers) || []).filter((p) => p && p.url);
+  const matches = all.filter((p) => !p.models || !p.models.length || p.models.some((g) => policy.toRegex(g).test(model)));
+  const chain = matches.length ? matches : all;
+  if (chain.length) return chain;
+  // No providers configured — keep the single-upstream behaviour working unchanged.
+  return [{ name: "upstream", url: legacyUpstream, key: legacyKey }];
+}
+
+// Worth trying the next provider? Transport failures, rate limits, and server errors are
+// another provider's problem to maybe not have. A malformed request (400/404/422) will fail
+// identically everywhere, so it returns immediately instead of stampeding the whole chain.
+const RETRIABLE = new Set([408, 425, 429, 500, 502, 503, 504, 401, 403]);
+
+async function forwardChain(chain, body) {
+  const attempts = [];
+  for (const p of chain) {
+    const key = p.key_env ? process.env[p.key_env] : (p.key || null);
+    try {
+      const r = await forward(p.url, key, body);
+      if (r.status < 400 || !RETRIABLE.has(r.status)) return Object.assign({}, r, { provider: p.name, attempts });
+      attempts.push({ provider: p.name, status: r.status });
+    } catch (e) {
+      attempts.push({ provider: p.name, error: String((e && e.message) || e) });
+    }
+  }
+  const detail = attempts.map((a) => `${a.provider}: ${a.status || a.error}`).join("; ");
+  return { status: 502, body: JSON.stringify({ error: { message: `every provider failed — ${detail}` } }), provider: null, attempts };
+}
+
 async function governed(project, led, upstream, key, body, dir, hdrAgent) {
   // Attribute the call to an agent: body.metadata.agent, or an x-foundry-agent header
   // (headers survive SDKs that drop unknown body fields, e.g. LangChain's metadata).
@@ -82,20 +121,30 @@ async function governed(project, led, upstream, key, body, dir, hdrAgent) {
   }
 
   const t0 = Date.now();
-  const up = await forward(upstream, key, body);
+  const chain = providerChain(project, model, upstream, key);
+  const up = await forwardChain(chain, body);
   const dur = Date.now() - t0;
   let resp; try { resp = JSON.parse(up.body); } catch { resp = { raw: up.body.slice(0, 500) }; }
   if (up.status >= 400) {
     const err = new Error((resp.error && resp.error.message) || `upstream ${up.status}`);
-    err.status = up.status; throw err;
+    err.status = up.status; err.attempts = up.attempts; throw err;
   }
   const cm = costMicros(model, resp.usage);
-  const eff = led.commit({ agent, tool: model, params: body, result: resp, type: "model", duration_ms: dur, cost_micros: cm });
+  // `provider` + `fell_back` are annotations (like duration/cost) — recorded on the effect
+  // but outside the receipt hash, so which provider served a call is auditable later.
+  const eff = led.commit({
+    agent, tool: model, params: body, result: resp, type: "model",
+    duration_ms: dur, cost_micros: cm,
+    provider: up.provider, fell_back: (up.attempts || []).length ? up.attempts : undefined,
+  });
   // Mirror to the cloud ledger so the model call shows up on the dashboard once graduated.
   // Re-read the project each call so a `foundry push` takes effect without a proxy restart.
-  const link = cloud.cloudLink(store.readProject(dir));
+  // Mirroring is best-effort: the call already succeeded and is committed locally, so a
+  // missing/unreadable project must never turn a served completion into an error.
+  let link = null;
+  try { link = cloud.cloudLink(store.readProject(dir)); } catch { /* nothing to mirror to */ }
   if (link) await cloud.mirrorEffect(link, eff).catch(() => {});
-  return { status: 200, json: resp, headers: { "x-foundry-cache": "miss", "x-foundry-cost-usd": (cm / 1e6).toFixed(6), "x-foundry-receipt": eff.receipt.number } };
+  return { status: 200, json: resp, headers: { "x-foundry-cache": "miss", "x-foundry-cost-usd": (cm / 1e6).toFixed(6), "x-foundry-receipt": eff.receipt.number, "x-foundry-provider": up.provider || "upstream", "x-foundry-fallback": String((up.attempts || []).length) } };
 }
 
 function sendJson(res, status, obj, headers) {
@@ -117,7 +166,9 @@ async function serveModel(dir, opts = {}) {
       req.on("data", (c) => (raw += c));
       req.on("end", async () => {
         let body; try { body = JSON.parse(raw); } catch { return sendJson(res, 400, { error: { message: "invalid JSON body" } }); }
-        try { const out = await governed(project, led, upstream, key, body, dir, req.headers["x-foundry-agent"]); sendJson(res, out.status, out.json, out.headers); }
+        // Re-read the project per request: providers, policies and budgets edited while the
+        // proxy is running must take effect immediately, not after a restart.
+        try { const out = await governed(store.readProject(dir), led, upstream, key, body, dir, req.headers["x-foundry-agent"]); sendJson(res, out.status, out.json, out.headers); }
         catch (e) { sendJson(res, e.status || 500, { error: { message: String((e && e.message) || e) } }); }
       });
     } else {
