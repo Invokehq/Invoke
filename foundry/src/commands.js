@@ -13,6 +13,7 @@ const memory = require("./memory");
 const embeddings = require("./embeddings");
 const coord = require("./coord");
 const { Approvals } = require("./approvals");
+const budget = require("./budget");
 const red = (s) => `\x1b[31m${s}\x1b[0m`;
 
 // Execute a tool locally: a connector tool ("<connector>.<tool>") proxies to its MCP
@@ -1201,6 +1202,63 @@ async function connect(args) {
   return liveTail(dir);
 }
 
+// ─────────────────────────────── budget (fleet + per-agent caps) ───────────────────────────────
+// A fleet cap (all agents) plus optional per-agent caps. Enforced by the model proxy: once
+// an agent — or the fleet — crosses its cap, its next spending call is refused (429).
+async function budgetCmd(args) {
+  const dir = requireProject();
+  const project = store.readProject(dir);
+  const led = new Ledger(store.ledgerDir(dir));
+  const sub = args._[0] || "show";
+  const pad = (s, n) => String(s).slice(0, n).padEnd(n);
+
+  if (sub === "set") {
+    if (args.fleet != null) {
+      const usd = Number(args.fleet);
+      if (!(usd >= 0)) throw new Error("Usage: foundry budget set --fleet <usd>");
+      project.budget_usd = usd; store.writeProject(dir, project);
+      console.log(`${green("✔ fleet budget")} ${b("$" + usd.toFixed(2))} ${dim("— total spend cap across all agents")}`);
+      return 0;
+    }
+    const agent = args._[1]; const usd = Number(args._[2]);
+    if (!agent || !(usd >= 0)) throw new Error("Usage:\n  foundry budget set <agent> <usd>\n  foundry budget set --fleet <usd>");
+    project.agent_budgets = project.agent_budgets || {};
+    project.agent_budgets[agent] = usd; store.writeProject(dir, project);
+    console.log(`${green("✔ budget")} ${b(agent)} ${b("$" + usd.toFixed(2))} ${dim("— per-agent cap")}`);
+    return 0;
+  }
+  if (sub === "rm" || sub === "unset") {
+    if (args.fleet != null) { delete project.budget_usd; store.writeProject(dir, project); console.log(dim("fleet budget removed")); return 0; }
+    const agent = args._[1];
+    if (!agent) throw new Error("Usage: foundry budget rm <agent>   ·   foundry budget rm --fleet");
+    if (project.agent_budgets) delete project.agent_budgets[agent];
+    store.writeProject(dir, project); console.log(dim(`${agent} budget removed`)); return 0;
+  }
+
+  // show — spend vs caps, fleet then each agent
+  const s = budget.spend(led);
+  const caps = project.agent_budgets || {};
+  const fleetCap = project.budget_usd;
+  if (args.json) {
+    const agents = Object.fromEntries([...new Set([...Object.keys(s.by), ...Object.keys(caps)])].filter((a) => a && a !== "—").map((a) => [a, { cap: caps[a] ?? null, spent_usd: (s.by[a] || 0) / 1e6 }]));
+    console.log(JSON.stringify({ fleet: { cap: fleetCap ?? null, spent_usd: s.total / 1e6 }, agents }, null, 2)); return 0;
+  }
+  const bar = (spent, cap) => {
+    if (cap == null) return dim("no cap · $" + spent.toFixed(2) + " spent");
+    const pct = cap === 0 ? 1 : Math.min(1, spent / cap);
+    const n = Math.round(pct * 16);
+    const col = pct >= 1 ? red : pct >= 0.8 ? yellow : green;
+    return col("█".repeat(n)) + dim("░".repeat(16 - n)) + "  $" + spent.toFixed(2) + dim("/$" + Number(cap).toFixed(2)) + (pct >= 1 ? " " + red("EXHAUSTED") : "");
+  };
+  console.log(`${b("Budget")} ${dim("— " + project.name)}\n`);
+  console.log(`  ${pad("fleet", 14)} ${bar(s.total / 1e6, fleetCap)}`);
+  const agents = [...new Set([...Object.keys(s.by), ...Object.keys(caps)])].filter((a) => a && a !== "—").sort();
+  for (const a of agents) console.log(`  ${pad(a, 14)} ${bar((s.by[a] || 0) / 1e6, caps[a] ?? null)}`);
+  if (!agents.length) console.log(dim("  no agents have spent yet"));
+  console.log(dim("\n  cap an agent:  foundry budget set <agent> <usd>   ·   fleet:  foundry budget set --fleet <usd>"));
+  return 0;
+}
+
 // ─────────────────────────────── approvals (human-in-the-loop) ───────────────────────────────
 // When a policy marks a tool `approve`, the gateway queues it here instead of running it.
 // A person approves → the effect runs once + is receipted → the agent gets it exactly-once.
@@ -1356,6 +1414,9 @@ async function doctorCmd(args) {
     const p = project.policies || {};
     const nrules = (p.deny || []).length + (p.approve || []).length + (p.allow || []).length;
     nrules ? ok("Policies", nrules + " rule(s)") : warn("Policies", "none set — foundry policy add");
+    const nCaps = Object.keys(project.agent_budgets || {}).length;
+    if (project.budget_usd || nCaps) ok("Budget", (project.budget_usd ? "fleet $" + Number(project.budget_usd).toFixed(2) : "no fleet cap") + (nCaps ? " · " + nCaps + " agent cap(s)" : ""));
+    else warn("Budget", "no caps — foundry budget set");
     try {
       const led = new Ledger(store.ledgerDir(dir));
       const v = led.verify();
@@ -1380,7 +1441,7 @@ async function doctorCmd(args) {
   return anyBad ? 1 : 0;
 }
 
-module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd, diff, mcp: mcpCmd, connect, memory: memoryCmd, task: taskCmd, handoff: handoffCmd, setup: setupCmd, doctor: doctorCmd, approvals: approvalsCmd };
+module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd, diff, mcp: mcpCmd, connect, memory: memoryCmd, task: taskCmd, handoff: handoffCmd, setup: setupCmd, doctor: doctorCmd, approvals: approvalsCmd, budget: budgetCmd };
 
 function parseJson(s) {
   try { const v = JSON.parse(s); if (v && typeof v === "object") return v; throw 0; }

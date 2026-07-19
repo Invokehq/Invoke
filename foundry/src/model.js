@@ -10,6 +10,7 @@ const store = require("./store");
 const { Ledger } = require("./ledger");
 const policy = require("./policy");
 const cloud = require("./cloud");
+const budget = require("./budget");
 
 // Rough list price, USD per 1M tokens: [input, output]. Matched by substring; default is a
 // conservative fallback so unknown models still get costed (never silently $0).
@@ -71,13 +72,13 @@ async function governed(project, led, upstream, key, body, dir, hdrAgent) {
     return { status: 200, json: dup.result, headers: { "x-foundry-cache": "hit", "x-foundry-cost-usd": "0.000000", "x-foundry-receipt": dup.receipt.number } };
   }
 
-  // Budget: reject a NEW (would-spend) call once the model budget is exhausted.
-  if (project.budget_usd) {
-    const spent = led.list().filter((e) => e.type === "model").reduce((s, e) => s + (e.cost_micros || 0), 0);
-    if (spent / 1e6 >= project.budget_usd) {
-      const err = new Error(`model budget exceeded: $${(spent / 1e6).toFixed(4)} / $${Number(project.budget_usd).toFixed(2)}`);
-      err.status = 429; throw err;
-    }
+  // Budget: reject a NEW (would-spend) call once a cap is exhausted — the agent's own cap
+  // first, then the fleet cap. Cache hits already returned above, so replays never trip this.
+  const over = budget.overCap(project, led, agent);
+  if (over) {
+    led.commit({ agent, tool: model, params: body, type: "model", status: "denied", result: { denied_budget: true, scope: over.scope }, duration_ms: 0 });
+    const err = new Error(`${over.scope} budget exceeded: $${over.spent.toFixed(4)} / $${over.cap.toFixed(2)}`);
+    err.status = 429; throw err;
   }
 
   const t0 = Date.now();

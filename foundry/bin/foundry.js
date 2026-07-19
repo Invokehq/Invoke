@@ -69,6 +69,8 @@ ${bold("BUILD")}
                            Execution control — gate tools/models (deny > approve > allow)
   approvals [list|approve|deny <id>]
                            Human-in-the-loop — review + release approve-gated calls
+  budget [set <agent> <usd> | set --fleet <usd>]
+                           Fleet + per-agent spend caps (model proxy enforces, 429 over cap)
   workspace                Show the active workspace (target, tools, budget)
     workspace use TARGET     Switch target: local | cloud | ws_id
     workspace connect N URL  Connect a hosted MCP server (governed)
@@ -110,6 +112,7 @@ async function main() {
     connect: commands.connect, memory: commands.memory,
     task: commands.task, handoff: commands.handoff,
     setup: commands.setup, doctor: commands.doctor, approvals: commands.approvals,
+    budget: commands.budget,
   };
   const fn = table[cmd];
   if (!fn) {
