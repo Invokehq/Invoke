@@ -161,6 +161,55 @@ async function orgMemory(link, limit = 200) {
   return out;
 }
 
+// ── Governance sync. Foundry enforces policies + budgets locally; graduating a workspace
+// must not drop them. On push we translate the local config into the cloud's admission
+// engine, so a `deny`/`approve` policy or a spend cap you set on your laptop is enforced
+// identically once agents run in the cloud. Foundry-managed policies are named `foundry:…`
+// so a re-sync replaces exactly them and leaves any hand-authored cloud policies alone.
+async function _req(link, method, path, body) {
+  try { const r = await request(link, method, `/v1/workspaces/${link.wsId}${path}`, body); return { ok: r.status >= 200 && r.status < 300, status: r.status, body: r.body }; }
+  catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+}
+
+async function syncGovernance(link, project) {
+  const out = { policies: 0, budget: false, agent_budgets: 0, cleared: 0, errors: [] };
+
+  // Policies: clear the ones we manage, then re-create from local config. deny/approve/allow
+  // map to the cloud's deny/require_approval/allow, with priorities that preserve Foundry's
+  // precedence (deny > approve > allow — lower number decides first).
+  const listed = await _req(link, "GET", "/policies");
+  if (listed.ok) {
+    let existing = [];
+    try { existing = JSON.parse(listed.body).policies || []; } catch { /* none */ }
+    for (const p of existing.filter((x) => (x.name || "").startsWith("foundry:"))) {
+      const d = await _req(link, "DELETE", `/policies/${p.id}`);
+      if (d.ok) out.cleared++;
+    }
+  }
+  const pol = project.policies || {};
+  for (const [key, effect, priority] of [["deny", "deny", 10], ["approve", "require_approval", 20], ["allow", "allow", 30]]) {
+    for (const glob of pol[key] || []) {
+      const r = await _req(link, "POST", "/policies", { name: `foundry:${key}:${glob}`, effect, mode: "enforce", match: { action_glob: glob }, priority });
+      r.ok ? out.policies++ : out.errors.push(`policy ${glob}: ${r.status || r.error}`);
+    }
+  }
+
+  // Fleet budget.
+  if (project.budget_usd != null) {
+    const r = await _req(link, "PUT", "/budget", { limit_micros: Math.round(Number(project.budget_usd) * 1e6) });
+    out.budget = r.ok;
+    if (!r.ok) out.errors.push(`budget: ${r.status || r.error}`);
+  }
+
+  // Per-agent caps (the agent must exist in the workspace to carry a budget).
+  for (const [agent, usd] of Object.entries(project.agent_budgets || {})) {
+    await ensureAgent(link, agent);
+    const r = await _req(link, "PATCH", `/agents/${encodeURIComponent(agent)}`, { budget_micros: Math.round(Number(usd) * 1e6) });
+    r.ok ? out.agent_budgets++ : out.errors.push(`agent ${agent}: ${r.status || r.error}`);
+  }
+  return out;
+}
+
 // Backfill: mirror every committed effect in the local ledger (used by `foundry push`).
 async function mirrorAll(link, effects) {
   let sent = 0, failed = 0;
@@ -172,4 +221,4 @@ async function mirrorAll(link, effects) {
   return { sent, failed };
 }
 
-module.exports = { cloudLink, orgMemory, mirrorEffect, mirrorMemory, mirrorAll, ensureAgent, cloudCoord, DEFAULT_BASE };
+module.exports = { cloudLink, syncGovernance, orgMemory, mirrorEffect, mirrorMemory, mirrorAll, ensureAgent, cloudCoord, DEFAULT_BASE };

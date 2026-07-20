@@ -668,12 +668,23 @@ async function push(args) {
   // isn't empty on arrival — the agents' history is there the moment you open it.
   const link = cloud.cloudLink(store.readProject(dir));
   const back = link ? await cloud.mirrorAll(link, effects) : { sent: 0, failed: 0 };
+  // Governance sync: your policies + spend caps go up too, so the cloud enforces exactly
+  // what Foundry does. Graduating strengthens governance instead of dropping it.
+  const gov = link ? await cloud.syncGovernance(link, store.readProject(dir)) : null;
   const dashUrl = `${store.INVOKE_WEB}/dashboard/runtime?ws=${wsId}`;
 
-  if (args.json) { console.log(JSON.stringify({ graduated: true, workspace: wsId, base, local_effects: effects.length, mirrored: back.sent, dashboard: dashUrl }, null, 2)); return 0; }
+  if (args.json) { console.log(JSON.stringify({ graduated: true, workspace: wsId, base, local_effects: effects.length, mirrored: back.sent, governance: gov, dashboard: dashUrl }, null, 2)); return 0; }
   console.log(green(`✔ Graduated "${project.name}" → Invoke`) + `  workspace ${b(wsId)}`);
   console.log(`  ${dim("durable, isolated, org-owned (Postgres-backed) — survives restarts, shareable with your team.")}`);
   console.log(`  ${green("↑")} streamed ${b(String(back.sent))} of ${effects.length} local effect(s) to the cloud ledger` + (back.failed ? dim(`  (${back.failed} failed)`) : ""));
+  if (gov) {
+    const parts = [];
+    if (gov.policies) parts.push(gov.policies + " polic" + (gov.policies === 1 ? "y" : "ies"));
+    if (gov.budget) parts.push("fleet budget");
+    if (gov.agent_budgets) parts.push(gov.agent_budgets + " agent cap(s)");
+    if (parts.length) console.log(`  ${green("⛨")} governance enforced in the cloud: ${parts.join(" · ")} ${dim("— same rules as local")}`);
+    if (gov.errors && gov.errors.length) console.log(dim(`  (governance: ${gov.errors.length} item(s) failed — ${gov.errors[0]})`));
+  }
   console.log(`  ${b("Watch it live:")}  ${dashUrl}`);
   console.log(dim(`  from here, every \`foundry run\` and every tool call through \`foundry serve\` streams to the dashboard.`));
   return 0;
