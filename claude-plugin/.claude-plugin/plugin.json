@@ -1,6 +1,6 @@
 {
   "name": "invoke",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Governed agent execution — every consequential tool call becomes a receipted, exactly-once, budget-capped Execution on the Invoke ledger. Bundles the Foundry MCP gateway + the routing discipline that keeps agents inside it.",
   "author": {
     "name": "Invoke",
