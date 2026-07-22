@@ -1,0 +1,14 @@
+{
+  "name": "invoke",
+  "owner": {
+    "name": "Invoke",
+    "url": "https://invokehq.run"
+  },
+  "plugins": [
+    {
+      "name": "invoke",
+      "source": "./claude-plugin",
+      "description": "Governed agent execution — receipts, budgets, approvals, exactly-once. Bundles the Foundry MCP gateway and the routing discipline that keeps agents inside it."
+    }
+  ]
+}

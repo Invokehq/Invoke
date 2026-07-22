@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "foundry": {
+      "command": "npx",
+      "args": ["-y", "@invokehq/foundry@0.16.1", "serve"]
+    }
+  }
+}
