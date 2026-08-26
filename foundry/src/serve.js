@@ -25,11 +25,38 @@ const VERSION = require("../package.json").version;
 // makes "integrate Invoke" work: the agent learns it should call `setup` first.
 const INSTRUCTIONS =
   "This project is governed by Invoke via Foundry. Every tool call routed through these " +
-  "tools is a receipted, exactly-once Execution (identity, cost, tamper-evident ledger). " +
+  "tools is recorded as a receipted Execution (identity, cost, tamper-evident ledger). " +
+  "Exactly-once is per-call: pass `_idempotency_key` — a stable key for the logical " +
+  "operation — on anything that mutates state, and a retry reconciles to the first receipt " +
+  "instead of duplicating the effect. Without it, a repeat re-executes. Pass `_agent_id` to " +
+  "attribute the call to a named agent. " +
   "When the user asks to integrate Invoke, set up governance, or govern their agent, call " +
   "the `setup` tool FIRST — it provisions the governed workspace and returns the exact " +
   "integration steps, including a model-proxy snippet to add to their code. Verify anytime " +
   "with the `foundry receipts --verify` CLI.";
+
+// `_idempotency_key` and `_agent_id` are read off every tools/call (see handleCall) but
+// were never advertised — so an agent reading tools/list had no way to discover them, and
+// every call fell through to at-least-once under one shared identity. Advertise them on
+// everything that can cause a side effect: a retry of a mutating call has to be able to
+// reconcile to its receipt instead of duplicating the effect.
+const GOVERNANCE_PROPS = {
+  _idempotency_key: {
+    type: "string",
+    description:
+      "Retry-safety. A stable key identifying this logical operation — repeating the call with the same key reconciles to the first receipt instead of re-executing it. Pass one on ANYTHING that mutates state (POST/PUT/DELETE, payments, messages, writes) so an ambiguous failure can be retried without duplicating the effect. Omit it and a repeat really does run again.",
+  },
+  _agent_id: {
+    type: "string",
+    description: "Attribute this Execution to a named agent in the ledger (default 'coding-agent'). Use the same id you claim tasks with.",
+  },
+};
+
+// Add the governance params to a tool's advertised schema without disturbing its own.
+function governed(schema) {
+  const s = schema || { type: "object" };
+  return Object.assign({}, s, { properties: Object.assign({}, s.properties, GOVERNANCE_PROPS) });
+}
 
 function builtinDefs() {
   const obj = (props, req) => ({ type: "object", properties: props || {}, required: req || [] });
@@ -37,11 +64,11 @@ function builtinDefs() {
     { name: "setup", description: "Integrate Invoke governance into this project. Provisions a governed workspace (budget + a starter safety policy) and returns the exact integration steps, including a model-proxy snippet to add to the code. Call this first whenever the user asks to integrate/set up Invoke or govern their agent.", inputSchema: obj({ budget_usd: { type: "number", description: "Spend cap in USD (default 5)." } }) },
     { name: "echo", description: "Echo the params back.", inputSchema: obj() },
     { name: "time", description: "Current time.", inputSchema: obj() },
-    { name: "http.get", description: "Governed HTTP GET.", inputSchema: obj({ url: { type: "string" } }, ["url"]) },
-    { name: "http.post", description: "Governed HTTP POST.", inputSchema: obj({ url: { type: "string" }, body: {} }, ["url"]) },
-    { name: "http.request", description: "Governed HTTP request (any method).", inputSchema: obj({ method: { type: "string" }, url: { type: "string" }, headers: { type: "object" }, body: {} }, ["url"]) },
-    { name: "file.read", description: "Read a file in the workspace (governed).", inputSchema: obj({ path: { type: "string" } }, ["path"]) },
-    { name: "file.write", description: "Write a file in the workspace (governed).", inputSchema: obj({ path: { type: "string" }, content: { type: "string" } }, ["path"]) },
+    { name: "http.get", description: "Governed HTTP GET.", inputSchema: governed(obj({ url: { type: "string" } }, ["url"])) },
+    { name: "http.post", description: "Governed HTTP POST.", inputSchema: governed(obj({ url: { type: "string" }, body: {} }, ["url"])) },
+    { name: "http.request", description: "Governed HTTP request (any method).", inputSchema: governed(obj({ method: { type: "string" }, url: { type: "string" }, headers: { type: "object" }, body: {} }, ["url"])) },
+    { name: "file.read", description: "Read a file in the workspace (governed).", inputSchema: governed(obj({ path: { type: "string" } }, ["path"])) },
+    { name: "file.write", description: "Write a file in the workspace (governed).", inputSchema: governed(obj({ path: { type: "string" }, content: { type: "string" } }, ["path"])) },
     // The Context layer: shared workspace memory every agent reads and writes. Keyed
     // writes upsert one canonical fact; a fact changed under you comes back `contested`.
     { name: "memory.set", description: "Write a fact into memory that every agent can read. Use a stable 'key' for a fact that should have ONE canonical value (it upserts instead of duplicating). Set shared:true for knowledge that is true across ALL projects, not just this one — other repos will find it. If another agent had written a different value, the result is flagged contested and keeps the prior value.", inputSchema: obj({ key: { type: "string" }, content: { type: "string" }, shared: { type: "boolean", description: "Org-wide knowledge, visible from every project." }, tags: { type: "array", items: { type: "string" } }, ttl_seconds: { type: "number", description: "Mark the fact stale after this long." }, confidence: { type: "number" } }, ["content"]) },
@@ -62,7 +89,7 @@ function aggregateTools(conns) {
   for (const [name, c] of Object.entries(conns || {})) {
     for (const t of c.tools || []) {
       const td = typeof t === "string" ? { name: t } : t;
-      list.push({ name: `${name}.${td.name}`, description: td.description || "", inputSchema: td.inputSchema || { type: "object" } });
+      list.push({ name: `${name}.${td.name}`, description: td.description || "", inputSchema: governed(td.inputSchema) });
     }
   }
   return list;

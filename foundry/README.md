@@ -113,8 +113,8 @@ server requires authorization (401). Connect it with a token:
 ## Run your coding agent on Foundry
 
 `foundry serve` is a governed MCP gateway over stdio. Point Claude Code / Cursor / Codex at it and
-**every tool call your agent makes becomes a governed Execution** — identity, exactly-once (blind
-retries reconcile to the receipt), and a signed, replayable ledger — without the agent knowing:
+**every tool call your agent makes becomes a governed Execution** — identity, cost, and a signed,
+replayable ledger — without the agent knowing:
 
 ```bash
 claude mcp add foundry -- foundry serve      # Claude Code
@@ -122,6 +122,18 @@ claude mcp add foundry -- foundry serve      # Claude Code
 foundry receipts            # everything it did, receipted
 foundry receipts --verify   # prove the ledger
 ```
+
+Exactly-once is the one part the agent *does* opt into, per call. Every governed tool advertises
+two extra params, so an agent reading `tools/list` can find them:
+
+| Param | What it does |
+|---|---|
+| `_idempotency_key` | A stable key for this logical operation. A repeat with the same key reconciles to the first receipt instead of re-executing. **Pass one on anything that mutates state** — POST/PUT/DELETE, payments, messages, writes — so an ambiguous failure can be retried without duplicating the effect. |
+| `_agent_id` | Attributes the Execution to a named agent (default `coding-agent`) — the same id you claim tasks with. |
+
+Without a key a repeat really does run again (at-least-once), which is the right default for reads
+and polling: `effect_key` has no time component, so blanket dedup would pin every identical call to
+one stale result forever.
 
 **Everything is an Execution** — tool calls today; model calls, HTTP, memory, and approvals plug in
 as more execution types (same identity / policy / retry / trace / cost / replay for each).
