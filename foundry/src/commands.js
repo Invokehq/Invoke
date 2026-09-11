@@ -153,7 +153,8 @@ async function hookCmd(args) {
   const found = store.findProject();
   const projectName = found ? store.readProject(found).name : path.basename(process.cwd());
   let r = null;
-  try { r = await auth.advance({ projectName, timeoutMs: 5000 }); } catch { /* offline — hint below */ }
+  // Invoke's API can take a while to wake from idle; the plugin gives this hook 45s.
+  try { r = await auth.advance({ projectName, timeoutMs: 20000 }); } catch { /* offline — hint below */ }
   if (r && r.signedIn) return 0;
   const out = r && r.pending
     ? {

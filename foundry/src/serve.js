@@ -58,7 +58,8 @@ async function signInGate(projectName) {
     return {
       signedIn: false,
       text: `🔐 Foundry needs you to sign in to Invoke, but sign-in couldn't be reached (${(e && e.message) || e}). ` +
-        "Run `npx -y @invokehq/foundry login` in a terminal, or start Foundry with --local to work offline.",
+        "Invoke may be waking up — try again in a few seconds. Or run `npx -y @invokehq/foundry login` in a " +
+        "terminal, or start Foundry with --local to work offline.",
     };
   }
 }
@@ -190,8 +191,8 @@ async function serve(dir, opts = {}) {
       if (method === "initialize") {
         let instructions = INSTRUCTIONS;
         if (requireSignIn && !auth.signedIn()) {
-          // Short timeout: a slow sign-in service must not stall the client's handshake.
-          const r = await auth.advance({ projectName: project.name, timeoutMs: 3000 }).catch(() => null);
+          // Bounded: a slow sign-in service must not stall the client's handshake for long.
+          const r = await auth.advance({ projectName: project.name, timeoutMs: 10000 }).catch(() => null);
           if (r && r.signedIn) onSignedIn(); // approved before this session even started
           else {
             instructions += signInInstructions(r && r.pending);
