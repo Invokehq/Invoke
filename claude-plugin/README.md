@@ -9,6 +9,8 @@ One install gives an agent both halves of governed execution:
   the gate and how to behave at its decision points (keys, approvals, denials).
   - `invoke:governed-actions` — act-time rules for external effects
   - `invoke:integrate` — setup flow around the MCP `setup` tool
+- **`hooks/`** — *sign-in*: on session start, a machine that isn't signed in to
+  Invoke shows a link + code to approve in the browser. Silent once signed in.
 
 ## Install
 
@@ -16,6 +18,18 @@ One install gives an agent both halves of governed execution:
 claude plugin marketplace add Invokehq/Invoke
 claude plugin install invoke@invoke
 ```
+
+Start a session and **sign in**: Claude Code shows
+
+```
+🔐 Invoke: sign in to govern this session → https://console.invokehq.run/device?code=WDJB-MJHT
+```
+
+Open it, sign in, check the code matches, **Authorize**. Foundry picks it up on
+its own. This machine gets its *own* member key — its agents can run governed
+calls in your workspace but can't change policy or approve their own actions.
+Until you approve, foundry's tools answer with the same link instead of running.
+(Headless box? `npx -y @invokehq/foundry login --no-browser` prints the link.)
 
 Then open Claude Code in the project you want governed and say:
 

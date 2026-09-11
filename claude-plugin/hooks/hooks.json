@@ -1,0 +1,17 @@
+{
+  "description": "Ask the person to sign in to Invoke when a session starts on a machine that isn't signed in yet. Silent once signed in.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npx -y @invokehq/foundry@0.20.1 hook session-start",
+            "timeout": 45
+          }
+        ]
+      }
+    ]
+  }
+}
