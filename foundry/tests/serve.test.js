@@ -82,7 +82,7 @@ function serveCalls(dir, calls) {
     '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
     ...calls.map((c, i) => JSON.stringify({ jsonrpc: "2.0", id: 10 + i, method: "tools/call", params: c })),
   ].join("\n") + "\n";
-  const r = spawnSync(process.execPath, [BIN, "serve"], { cwd: dir, input, encoding: "utf8", timeout: 15000 });
+  const r = spawnSync(process.execPath, [BIN, "serve", "--local"], { cwd: dir, input, encoding: "utf8", timeout: 15000 });
   assert.equal(r.status, 0, r.stderr);
   return r.stdout.trim().split("\n").map((l) => JSON.parse(l));
 }

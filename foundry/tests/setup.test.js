@@ -46,7 +46,7 @@ test("`foundry serve` advertises the setup tool and initialize carries integrati
     '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
     '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}',
   ].join("\n") + "\n";
-  const r = spawnSync(process.execPath, [BIN, "serve"], { cwd: dir, input, encoding: "utf8", timeout: 8000 });
+  const r = spawnSync(process.execPath, [BIN, "serve", "--local"], { cwd: dir, input, encoding: "utf8", timeout: 8000 });
   const lines = r.stdout.trim().split("\n").map((l) => JSON.parse(l));
   const init = lines.find((m) => m.id === 1);
   const list = lines.find((m) => m.id === 2);

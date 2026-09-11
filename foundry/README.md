@@ -32,7 +32,7 @@ foundry init            # forge a local governed workspace (no account)
 foundry run             # run an agent, governed — exactly-once + a signed receipt
 foundry trace --follow  # watch executions stream in live as your agent acts
 foundry receipts        # see what happened; --verify proves the ledger
-foundry login           # link to Invoke for durable, shareable, team workspaces
+foundry login           # sign in (approve a code in the browser) — this machine gets its own agent key
 ```
 
 ## Why
@@ -44,8 +44,9 @@ as Invoke's cloud, on your disk:
   and it's **reconciled to the existing receipt**, not executed twice. Blind retries are safe.
 - **Receipted.** Every commit mints a hash-chained, HMAC-signed receipt. `foundry receipts
   --verify` recomputes the chain and signatures — tamper-evident.
-- **Local-first.** No login, no server, no signup to get to value. When you want durability,
-  teammates, and org isolation, `foundry login` + `foundry push` graduate the workspace to Invoke.
+- **Local-first.** `init`, `run` and `receipts` need no login, no server, no signup. `foundry serve`
+  — the gateway your coding agent runs through — asks you to sign in once, so its work lands in your
+  Invoke workspace under a key that can't approve its own actions (`--local` keeps it offline).
 
 ## Commands
 
@@ -67,9 +68,10 @@ as Invoke's cloud, on your disk:
 | `foundry workspace connect <name> <mcp_url>` | Connect a real MCP tool server (governed) |
 | `foundry workspace setup [--connect n=url] [--budget usd]` | Guided: connect a tool + set a budget |
 | `foundry workspace tools` | List available tools |
-| `foundry serve` | Governed MCP gateway (stdio) — point your coding agent at it |
+| `foundry serve [--local]` | Governed MCP gateway (stdio) — point your coding agent at it. Until you sign in, tool calls answer with the sign-in link; `--local` runs offline |
 | `foundry status` | Project, active target, and Invoke link state |
-| `foundry login [--token K]` | Link this machine to Invoke (opens the web app) |
+| `foundry login [--no-browser] [--token K]` | Sign in: open the link, confirm the code, and this machine gets its **own member key** (it can run governed calls, never change policy or approve its own actions). `--token` for CI |
+| `foundry logout` | Forget this machine's key (revoke it in the dashboard if the machine is lost) |
 | `foundry push` | Graduate the workspace to a durable cloud one **and stream every execution to the Invoke dashboard, live** |
 
 Built-in execution adapters: `echo` · `time` · **`http.get`/`http.post`/`http.request`** (governed HTTP) ·
@@ -118,6 +120,7 @@ replayable ledger — without the agent knowing:
 
 ```bash
 claude mcp add foundry -- foundry serve      # Claude Code
+# first run: your agent relays a sign-in link + code — approve it in the browser
 # then, after your agent works:
 foundry receipts            # everything it did, receipted
 foundry receipts --verify   # prove the ledger
@@ -231,7 +234,7 @@ is streamed to the Invoke workspace ledger as it happens — so the dashboard sh
 working in real time.
 
 ```bash
-foundry login          # link this machine to Invoke
+foundry login          # sign in — approve the code in your browser
 foundry push           # graduate + backfill history, then stream live
 #  ✔ Graduated "myapp" → Invoke  workspace ws_…
 #  ↑ streamed 12 of 12 local effect(s) to the cloud ledger

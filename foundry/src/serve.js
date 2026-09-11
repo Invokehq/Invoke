@@ -17,6 +17,7 @@ const memory = require("./memory");
 const { Coord } = require("./coord");
 const { Approvals } = require("./approvals");
 const { runSetup } = require("./setup");
+const auth = require("./auth");
 
 const PROTOCOL = "2025-06-18";
 const VERSION = require("../package.json").version;
@@ -34,6 +35,33 @@ const INSTRUCTIONS =
   "the `setup` tool FIRST — it provisions the governed workspace and returns the exact " +
   "integration steps, including a model-proxy snippet to add to their code. Verify anytime " +
   "with the `foundry receipts --verify` CLI.";
+
+// Appended to INSTRUCTIONS while this machine isn't signed in, so the agent tells the
+// person up front instead of discovering it on its first refused tool call.
+function signInInstructions(pending) {
+  return pending
+    ? ` IMPORTANT: Foundry is not signed in to Invoke yet, so its tools will refuse to run. ` +
+      `Before using them, ask the user to open ${pending.verification_uri_complete} and confirm ` +
+      `the code ${pending.user_code}. Foundry picks up the approval on its own.`
+    : " IMPORTANT: Foundry is not signed in to Invoke yet, so its tools will refuse to run. " +
+      "Ask the user to run `npx -y @invokehq/foundry login` in a terminal.";
+}
+
+// Every tools/call while signed out lands here: collect the key if the person has
+// approved since the last call, otherwise answer with the link + code to approve.
+async function signInGate(projectName) {
+  try {
+    const r = await auth.advance({ projectName });
+    if (r.signedIn) return { signedIn: true };
+    return { signedIn: false, text: auth.signInPrompt(r.pending, { denied: r.denied }) };
+  } catch (e) {
+    return {
+      signedIn: false,
+      text: `🔐 Foundry needs you to sign in to Invoke, but sign-in couldn't be reached (${(e && e.message) || e}). ` +
+        "Run `npx -y @invokehq/foundry login` in a terminal, or start Foundry with --local to work offline.",
+    };
+  }
+}
 
 // `_idempotency_key` and `_agent_id` are read off every tools/call (see handleCall) but
 // were never advertised — so an agent reading tools/list had no way to discover them, and
@@ -116,21 +144,39 @@ async function execute(name, params, conns, dir, project, agent, link) {
   throw e;
 }
 
-async function serve(dir) {
-  const project = store.readProject(dir);
+async function serve(dir, opts = {}) {
+  let project = store.readProject(dir);
   const conns = store.readConnectors(dir);
   const led = new Ledger(store.ledgerDir(dir));
   const tools = aggregateTools(conns);
-  const link = cloud.cloudLink(project); // non-null once graduated: mirror to the dashboard
+  let link = cloud.cloudLink(project); // non-null once graduated: mirror to the dashboard
+  // Signing in is how a person installs Foundry: until this machine holds an Invoke key,
+  // tool calls get the sign-in link instead of running. --local opts out (offline, CI).
+  const requireSignIn = !(opts.local || process.env.FOUNDRY_LOCAL === "1");
 
   const write = (m) => process.stdout.write(JSON.stringify(m) + "\n");
   const log = (...a) => process.stderr.write(`[foundry] ${a.join(" ")}\n`);
   const ok = (id, result) => write({ jsonrpc: "2.0", id, result });
   const fail = (id, code, message) => write({ jsonrpc: "2.0", id, error: { code, message } });
 
+  // A signed-in machine mirrors each project to the workspace it was authorized into — a
+  // project opened after signing in gets linked here, one signed in mid-session in onSignedIn.
+  const relink = () => {
+    if (!auth.linkProject(dir)) return false;
+    project = store.readProject(dir);
+    link = cloud.cloudLink(project);
+    return true;
+  };
+  const onSignedIn = () => {
+    log("signed in to Invoke — this machine now has its own agent key.");
+    if (relink() && link) log(`linked this project → mirroring every call to Invoke workspace ${link.wsId} (live on the dashboard).`);
+  };
+  if (auth.signedIn()) relink();
+
   log(`serving ${tools.length} governed tool(s) from ${Object.keys(conns).length} connector(s) — "${project.name}".`);
   log(`every call is an Execution: receipted + exactly-once. see them with \`foundry receipts\`.`);
   if (link) log(`graduated → mirroring every call to Invoke workspace ${link.wsId} (live on the dashboard).`);
+  if (!requireSignIn) log(`--local: running without an Invoke sign-in.`);
 
   const pending = []; // in-flight cloud mirrors — drained before we exit so the last call isn't lost
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
@@ -142,12 +188,27 @@ async function serve(dir) {
     const { id, method, params } = msg;
     try {
       if (method === "initialize") {
-        ok(id, { protocolVersion: PROTOCOL, capabilities: { tools: { listChanged: false } }, serverInfo: { name: "foundry", version: VERSION }, instructions: INSTRUCTIONS });
+        let instructions = INSTRUCTIONS;
+        if (requireSignIn && !auth.signedIn()) {
+          // Short timeout: a slow sign-in service must not stall the client's handshake.
+          const r = await auth.advance({ projectName: project.name, timeoutMs: 3000 }).catch(() => null);
+          if (r && r.signedIn) onSignedIn(); // approved before this session even started
+          else {
+            instructions += signInInstructions(r && r.pending);
+            if (r && r.pending) log(`not signed in to Invoke — open ${r.pending.verification_uri_complete} (code ${r.pending.user_code}).`);
+          }
+        }
+        ok(id, { protocolVersion: PROTOCOL, capabilities: { tools: { listChanged: false } }, serverInfo: { name: "foundry", version: VERSION }, instructions });
       } else if (method === "tools/list") {
         ok(id, { tools });
       } else if (method === "ping") {
         ok(id, {});
       } else if (method === "tools/call") {
+        if (requireSignIn && !auth.signedIn()) {
+          const gate = await signInGate(project.name);
+          if (!gate.signedIn) { ok(id, { content: [{ type: "text", text: gate.text }], isError: true }); continue; }
+          onSignedIn();
+        }
         await handleCall(id, params || {}, { conns, led, ok, fail, log, project, dir, link, pending });
       } else if (method && method.startsWith("notifications/")) {
         // notifications get no response

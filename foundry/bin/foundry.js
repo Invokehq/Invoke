@@ -6,7 +6,7 @@ try { require("node:dns").setDefaultResultOrder("ipv4first"); } catch { /* older
 const commands = require("../src/commands");
 const pkg = require("../package.json");
 
-const BOOL_FLAGS = new Set(["json", "force", "verify", "help", "version", "follow", "no-follow", "f", "yes", "y", "once", "shared"]);
+const BOOL_FLAGS = new Set(["json", "force", "verify", "help", "version", "follow", "no-follow", "f", "yes", "y", "once", "shared", "local", "no-browser"]);
 const ALIAS = { h: "help", V: "version", f: "follow", y: "yes" };
 // Flags that may be given more than once collect into an array (--env A --env B).
 const REPEATABLE = new Set(["env", "header"]);
@@ -86,7 +86,8 @@ ${bold("BUILD")}
 
 ${bold("SERVE (run your coding agent on Foundry)")}
   serve                    Governed MCP gateway over stdio — point Claude Code/Cursor at it;
-                            every tool call becomes a receipted Execution
+                            every tool call becomes a receipted Execution. Asks you to
+                            sign in to Invoke first  (--local: offline, no sign-in)
   mcp [add --client X]     Wire Foundry into any agent — Claude Code, Cursor, Windsurf,
                             Claude Desktop, Codex, VS Code/Cline (bare lists them all)
   model serve              Governed LLM proxy (OpenAI-compatible) — model calls become
@@ -100,7 +101,9 @@ ${bold("DEPLOY AGENTS (they run without you)")}
                             --interval S · --max N · --timeout S
 
 ${bold("DEPLOY (to Invoke)")}
-  login [--token K]        Link this machine to Invoke (opens the web app)
+  login                    Sign in: approve a code in the browser and this machine gets
+                            its own agent key  (--no-browser · --token K for CI)
+  logout                   Forget this machine's key
   push                     Graduate the local workspace to a durable cloud one
 
   Built-in tools: echo | time | http.get '{"url":"..."}'
@@ -115,7 +118,8 @@ async function main() {
   if (!cmd) { console.log(HELP); return 0; }
 
   const table = {
-    login: commands.login, init: commands.init, run: commands.run,
+    login: commands.login, logout: commands.logout, hook: commands.hook,
+    init: commands.init, run: commands.run,
     receipts: commands.receipts, status: commands.status, push: commands.push,
     workspace: commands.workspace, serve: commands.serve, trace: commands.trace,
     model: commands.model, policy: commands.policy, diff: commands.diff, mcp: commands.mcp,

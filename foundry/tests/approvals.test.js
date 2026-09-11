@@ -39,7 +39,7 @@ test("human-in-the-loop: approve-gated tool queues, approves, executes once", ()
   ].join("\n") + "\n";
 
   // 1. agent call → queued, file NOT written
-  const first = run(["serve"], { input: call, timeout: 8000 });
+  const first = run(["serve", "--local"], { input: call, timeout: 8000 });
   const firstResp = first.stdout.trim().split("\n").map((l) => JSON.parse(l)).find((m) => m.id === 2);
   assert.match(firstResp.result.content[0].text, /queued .* for human approval/);
   assert.ok(!fs.existsSync(path.join(dir, "r.txt")), "side effect is held, not executed");
@@ -56,7 +56,7 @@ test("human-in-the-loop: approve-gated tool queues, approves, executes once", ()
   assert.equal(fs.readFileSync(path.join(dir, "r.txt"), "utf8"), "hi", "effect executed on approval");
 
   // 4. agent re-calls → gets the result, exactly ONE committed file.write
-  const second = run(["serve"], { input: call, timeout: 8000 });
+  const second = run(["serve", "--local"], { input: call, timeout: 8000 });
   const secondResp = second.stdout.trim().split("\n").map((l) => JSON.parse(l)).find((m) => m.id === 2);
   assert.ok(!secondResp.result.isError, "re-call succeeds");
   const receipts = JSON.parse(run(["receipts", "--json"]).stdout || "[]");
@@ -75,7 +75,7 @@ test("deny records a signed refusal and never executes the tool", () => {
     '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}',
     '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"file.write","arguments":{"path":"x.txt","content":"nope","_agent_id":"a"}}}',
   ].join("\n") + "\n";
-  run(["serve"], { input: call, timeout: 8000 });
+  run(["serve", "--local"], { input: call, timeout: 8000 });
   const id = JSON.parse(run(["approvals", "list", "--json"]).stdout).pending[0].id;
   const deny = run(["approvals", "deny", id]);
   assert.match(deny.stdout, /denied/);

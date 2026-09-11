@@ -14,6 +14,7 @@ const embeddings = require("./embeddings");
 const coord = require("./coord");
 const { Approvals } = require("./approvals");
 const budget = require("./budget");
+const auth = require("./auth");
 const red = (s) => `\x1b[31m${s}\x1b[0m`;
 
 // Execute a tool locally: a connector tool ("<connector>.<tool>") proxies to its MCP
@@ -96,30 +97,74 @@ function fmtBudget(bd) {
 }
 
 // ─────────────────────────────── login ───────────────────────────────
+// Browser device sign-in (see auth.js): no key to copy, and this machine gets its OWN
+// member key rather than the org owner's. `--token K` stays for CI / headless machines.
 async function login(args) {
-  const url = store.INVOKE_WEB + "/signup?from=foundry";
-  console.log(`Foundry forges agents locally — you do ${b("not")} need to log in to build.`);
-  console.log(`Logging in links this machine to ${b("Invoke")}, the platform you deploy to.\n`);
-  let token = args.token;
-  if (!token) {
-    console.log(`Opening ${url} …  (sign in, create your team, copy your key)`);
-    openBrowser(url);
-    if (!process.stdin.isTTY) {
-      throw new Error("Non-interactive shell — pass --token <invoke_key>.");
-    }
-    token = await ask("Paste your Invoke key (or Enter to stay local): ");
-  }
-  if (!token) {
-    console.log(dim("\nStaying local. Build away — `foundry init` then `foundry run`."));
+  if (args.token) {
+    const cfg = store.readGlobalConfig();
+    cfg.invoke_token = String(args.token).trim();
+    cfg.invoke_base = args.baseUrl || cfg.invoke_base || (process.env.INVOKE_API_URL || "https://api.invokehq.run");
+    cfg.linked_at = new Date().toISOString();
+    cfg.linked_via = "token";
+    store.writeGlobalConfig(cfg);
+    console.log(green(`✔ Linked to Invoke`) + dim(` with the key you passed.`));
     return 0;
   }
+  if (args.baseUrl) process.env.INVOKE_API_URL = args.baseUrl;
+  const dir = store.findProject();
+  const projectName = dir ? store.readProject(dir).name : path.basename(process.cwd());
+  const r = await auth.advance({ projectName });
+  if (!r.signedIn) {
+    const p = r.pending;
+    console.log(`Sign in to ${b("Invoke")} to connect this machine.\n`);
+    console.log(`  Open     ${b(p.verification_uri_complete)}`);
+    console.log(`  Confirm  ${b(p.user_code)}  ${dim(`(expires in ${auth.minutesLeft(p)} min)`)}\n`);
+    if (!args["no-browser"] && openBrowser(p.verification_uri_complete)) console.log(dim("  (opened it in your browser)"));
+    process.stdout.write(dim("  Waiting for approval"));
+    const done = await auth.waitFor(p, { onTick: () => process.stdout.write(dim(".")) });
+    process.stdout.write("\n");
+    if (done.state === "denied") throw new Error("Sign-in was denied in the browser.");
+    if (done.state !== "signed_in") throw new Error("The code expired before it was approved — run `foundry login` again.");
+  }
   const cfg = store.readGlobalConfig();
-  cfg.invoke_token = token.trim();
-  cfg.invoke_base = args.baseUrl || cfg.invoke_base || (process.env.INVOKE_API_URL || "https://api.invokehq.run");
-  cfg.linked_at = new Date().toISOString();
-  store.writeGlobalConfig(cfg);
-  console.log(green(`\n✔ Linked to Invoke.`) + ` You can now ${b("foundry push")} a local build to the cloud.`);
-  console.log(dim(`(Prototype: paste-key stands in for the browser device-code flow.)`));
+  console.log(green(`\n✔ Signed in to Invoke.`) +
+    (cfg.invoke_key_prefix ? ` This machine has its own agent key ${b(cfg.invoke_key_prefix)}.` : ""));
+  if (cfg.invoke_key_role === "member") {
+    console.log(dim(`  It can run governed tool calls in your workspace, but can't change policy or approve its own actions.`));
+  }
+  if (dir && auth.linkProject(dir)) console.log(`  ${green("↑")} linked "${projectName}" — its governed calls now show up on the dashboard.`);
+  return 0;
+}
+
+async function logout() {
+  const prefix = auth.logout();
+  console.log(green("✔ Signed out of Invoke on this machine."));
+  if (prefix) console.log(dim(`  The key ${prefix} still works until you revoke it in the dashboard (Settings → API keys).`));
+  return 0;
+}
+
+// `foundry hook session-start` — the Claude Code plugin's SessionStart hook. Signed in:
+// silent. Signed out: show the person the link + code (systemMessage) and tell the agent
+// its Foundry tools will refuse until they approve (additionalContext). Never fails the
+// session: any error degrades to a plain hint.
+async function hookCmd(args) {
+  if (args._[0] !== "session-start") throw new Error("usage: foundry hook session-start");
+  if (auth.signedIn()) return 0;
+  const found = store.findProject();
+  const projectName = found ? store.readProject(found).name : path.basename(process.cwd());
+  let r = null;
+  try { r = await auth.advance({ projectName, timeoutMs: 5000 }); } catch { /* offline — hint below */ }
+  if (r && r.signedIn) return 0;
+  const out = r && r.pending
+    ? {
+        systemMessage: `🔐 Invoke: sign in to govern this session → ${r.pending.verification_uri_complete}  (code ${r.pending.user_code})`,
+        hookSpecificOutput: {
+          hookEventName: "SessionStart",
+          additionalContext: `Foundry (Invoke) is not signed in, so its tools will refuse to run. If the user wants governed actions, ask them to open ${r.pending.verification_uri_complete} and confirm the code ${r.pending.user_code}.`,
+        },
+      }
+    : { systemMessage: "🔐 Invoke: not signed in — run `npx -y @invokehq/foundry login` in a terminal." };
+  console.log(JSON.stringify(out));
   return 0;
 }
 
@@ -625,7 +670,9 @@ function workspaceUse(args) {
 // ─────────────────────────────── status ───────────────────────────────
 function status() {
   const cfg = store.readGlobalConfig();
-  const linked = cfg.invoke_token ? green("linked to Invoke") : dim("local only (not logged in)");
+  const linked = cfg.invoke_token
+    ? green("signed in to Invoke") + (cfg.invoke_key_prefix ? dim(`  key ${cfg.invoke_key_prefix} (${cfg.invoke_key_role || "member"})`) : "")
+    : dim("not signed in — `foundry login`");
   console.log(`Foundry ${dim("— forge locally, deploy to Invoke")}`);
   console.log(`  account:   ${linked}`);
   const dir = store.findProject();
@@ -683,7 +730,13 @@ async function push(args) {
     if (gov.budget) parts.push("fleet budget");
     if (gov.agent_budgets) parts.push(gov.agent_budgets + " agent cap(s)");
     if (parts.length) console.log(`  ${green("⛨")} governance enforced in the cloud: ${parts.join(" · ")} ${dim("— same rules as local")}`);
-    if (gov.errors && gov.errors.length) console.log(dim(`  (governance: ${gov.errors.length} item(s) failed — ${gov.errors[0]})`));
+    // A device sign-in holds a member key, which by design can't write cloud policy or
+    // budgets — that's the org admin's call, made in the dashboard. Say so, not "failed".
+    if (gov.errors && gov.errors.length && gov.errors.every((e) => /\b403\b/.test(e))) {
+      console.log(dim(`  cloud policies + budgets stay with your org admin — this machine's key can't change them. Set them in the dashboard.`));
+    } else if (gov.errors && gov.errors.length) {
+      console.log(dim(`  (governance: ${gov.errors.length} item(s) failed — ${gov.errors[0]})`));
+    }
   }
   console.log(`  ${b("Watch it live:")}  ${dashUrl}`);
   console.log(dim(`  from here, every \`foundry run\` and every tool call through \`foundry serve\` streams to the dashboard.`));
@@ -1537,7 +1590,7 @@ async function setupCmd(args) {
 
   console.log(`\n  ${b("Done.")} Your agents are now governed.`);
   const cfg = store.readGlobalConfig();
-  if (!cfg.invoke_token) console.log(dim("  → link the cloud + dashboard:  foundry login  then  foundry push"));
+  if (!cfg.invoke_token) console.log(dim("  → sign in to link the cloud + dashboard:  foundry login"));
   else if (!(project.invoke && project.invoke.workspace)) console.log(dim("  → stream to the dashboard:  foundry push"));
   console.log(dim("  → verify everything:  foundry doctor"));
   return 0;
@@ -1593,7 +1646,7 @@ async function doctorCmd(args) {
   return anyBad ? 1 : 0;
 }
 
-module.exports = { login, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd, diff, mcp: mcpCmd, connect, memory: memoryCmd, task: taskCmd, handoff: handoffCmd, setup: setupCmd, doctor: doctorCmd, approvals: approvalsCmd, budget: budgetCmd, worker: workerCmd };
+module.exports = { login, logout, hook: hookCmd, init, run, receipts, status, push, workspace, serve, trace, model, policy: policyCmd, diff, mcp: mcpCmd, connect, memory: memoryCmd, task: taskCmd, handoff: handoffCmd, setup: setupCmd, doctor: doctorCmd, approvals: approvalsCmd, budget: budgetCmd, worker: workerCmd };
 
 function parseJson(s) {
   try { const v = JSON.parse(s); if (v && typeof v === "object") return v; throw 0; }
